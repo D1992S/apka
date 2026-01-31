@@ -19,6 +19,7 @@ import numpy as np
 import json
 import os
 import hashlib
+import calendar
 from pathlib import Path
 from datetime import datetime, timedelta
 from typing import Optional, Dict, List
@@ -30,7 +31,7 @@ from yt_idea_evaluator_pro_v2 import YTIdeaEvaluatorV2, Config, format_result
 from config_manager import (
     AppConfig, EvaluationHistory, IdeaVault, TrendAlerts,
     get_config, get_history, get_vault, get_alerts, generate_report,
-    get_series_manager, get_competitor_manager
+    get_competitor_manager
 )
 from youtube_sync import YouTubeSync, get_youtube_sync, GOOGLE_API_AVAILABLE
 
@@ -62,8 +63,8 @@ try:
     from advanced_analytics import (
         AdvancedAnalytics, HookAnalyzer, TrendsAnalyzer, 
         CompetitionScanner, PackagingDNA, TimingPredictor,
-        PromiseGenerator, ABTitleTester, ContentGapFinder,
-        WtopaAnalyzer, SeriesAnalyzer
+        PromiseGenerator, ContentGapFinder,
+        WtopaAnalyzer
     )
     ADVANCED_AVAILABLE = True
 except ImportError as e:
@@ -85,16 +86,6 @@ st.set_page_config(
 # SESSION STATE - zachowuje dane między przeładowaniami
 # =============================================================================
 
-if "last_result" not in st.session_state:
-    st.session_state.last_result = None
-if "last_title" not in st.session_state:
-    st.session_state.last_title = ""
-if "last_promise" not in st.session_state:
-    st.session_state.last_promise = ""
-if "comparison_result" not in st.session_state:
-    st.session_state.comparison_result = None
-if "ab_result" not in st.session_state:
-    st.session_state.ab_result = None
 
 # =============================================================================
 # STYLE CSS (DARK MODE FRIENDLY)
@@ -105,6 +96,18 @@ st.markdown("""
 /* Dark mode friendly colors */
 .stAlert > div {
     color: inherit !important;
+}
+
+/* Layout helpers */
+.section-card {
+    background: #141414;
+    border: 1px solid #2a2a2a;
+    border-radius: 12px;
+    padding: 16px;
+    margin-bottom: 12px;
+}
+.section-card h4 {
+    margin: 0 0 8px 0;
 }
 
 /* Cards */
@@ -876,22 +879,15 @@ with st.sidebar:
 # MAIN TABS
 # =============================================================================
 
-tab_evaluate, tab_compare, tab_tools, tab_analytics, tab_history, tab_vault, tab_data, tab_explain, tab_diag = st.tabs([
+tab_evaluate, tab_tools, tab_analytics, tab_history, tab_vault, tab_data, tab_diag = st.tabs([
     "🎯 Oceń pomysł",
-    "⚖️ Porównaj",
     "🛠️ Narzędzia",
     "📊 Analytics",
     "📜 Historia",
     "💡 Idea Vault",
     "📁 Dane",
-    "🧠 Explainability",
     "🧪 Diagnostyka"
 ])
-
-# =============================================================================
-# NOWY TAB: OCEŃ TEMAT (v4 feature)
-# =============================================================================
-# Ten tab jest dostępny w zakładce Narzędzia jako "🎯 Oceń TEMAT"
 
 # =============================================================================
 # TAB: OCEŃ POMYSŁ
@@ -922,14 +918,44 @@ with tab_evaluate:
     with st.expander("⚙️ Co ma brać pod uwagę", expanded=False):
         c1, c2, c3 = st.columns(3)
         with c1:
-            inc_competition = st.checkbox("Konkurencja (YouTube)", value=True, key="main_inc_comp")
-            inc_similar = st.checkbox("Podobne hity (kanał)", value=True, key="main_inc_sim")
+            inc_competition = st.checkbox(
+                "Konkurencja (YouTube)",
+                value=True,
+                key="main_inc_comp",
+                help="Sprawdza nasycenie rynku i liczbę podobnych treści w YouTube."
+            )
+            inc_similar = st.checkbox(
+                "Podobne hity (kanał)",
+                value=True,
+                key="main_inc_sim",
+                help="Porównuje temat do Twoich historycznych hitów na kanale."
+            )
         with c2:
-            inc_trends = st.checkbox("Google Trends", value=True, key="main_inc_trends")
-            inc_external = st.checkbox("Źródła zewnętrzne (Wiki/News)", value=True, key="main_inc_ext")
+            inc_trends = st.checkbox(
+                "Google Trends",
+                value=True,
+                key="main_inc_trends",
+                help="Ocena trendu wyszukiwań w Google dla tematu."
+            )
+            inc_external = st.checkbox(
+                "Źródła zewnętrzne (Wiki/News)",
+                value=True,
+                key="main_inc_ext",
+                help="Sprawdza świeżość i zainteresowanie z Wikipedii i newsów."
+            )
         with c3:
-            inc_viral = st.checkbox("Viral Score", value=True, key="main_inc_viral")
-            inc_timeline = st.checkbox("Performance Timeline", value=True, key="main_inc_timeline")
+            inc_viral = st.checkbox(
+                "Viral Score",
+                value=True,
+                key="main_inc_viral",
+                help="Predykcja wiralowości na podstawie tytułu/tematu."
+            )
+            inc_timeline = st.checkbox(
+                "Performance Timeline",
+                value=True,
+                key="main_inc_timeline",
+                help="Prognoza wyświetleń po 1/7/30 dniach."
+            )
 
     with st.expander("🧪 Batch: oceń wiele tematów naraz", expanded=False):
         batch_raw = st.text_area(
@@ -1235,6 +1261,49 @@ with tab_evaluate:
     with b4:
         stop_and_save = st.button("⏹️ STOP + Zapisz częściowo", use_container_width=True, key="main_topic_step_stop")
 
+    st.markdown("### ⚡ Tryb jedno‑kliknięcie")
+    if st.button("✅ Oceń + wygeneruj + zapisz do Vault", use_container_width=True, key="main_one_click"):
+        if not topic_input_main:
+            st.warning("Wpisz temat.")
+        elif not api_key:
+            st.error("❌ Brak OpenAI API Key. Dodaj klucz w sidebarze.")
+        elif merged_df is None:
+            st.warning("⚠️ Najpierw wczytaj dane kanału (zakładka: Dane).")
+        else:
+            job = {
+                "topic": topic_input_main.strip(),
+                "n_titles": n_titles_main,
+                "n_promises": n_promises_main,
+                "api_key": api_key,
+                "inc_competition": inc_competition,
+                "inc_similar": inc_similar,
+                "inc_trends": inc_trends,
+                "inc_external": inc_external,
+                "inc_viral": inc_viral,
+                "inc_timeline": inc_timeline,
+                "result": {"topic": topic_input_main.strip(), "timestamp": datetime.now().isoformat()}
+            }
+            with st.spinner("Oceniam temat i zapisuję..."):
+                for stg in [0, 1, 2, 3, 4, 5]:
+                    job = _topic_stage_run(stg, job)
+            st.session_state.topic_job_main = job
+            st.session_state.topic_result_main = job.get("result")
+            res = st.session_state.topic_result_main or {}
+            best_title = (res.get("selected_title") or {}).get("title") or f"Temat: {res.get('topic','')}"
+            best_promise = (res.get("promises") or [{}])[0].get("promise", "")
+            score = int(res.get("overall_score", res.get("overall_score_base", 0) or 0))
+            vault.add(
+                title=best_title,
+                promise=best_promise,
+                score=score,
+                reason="Ocena tematu - zapis z trybu jedno‑kliknięcia",
+                tags=["topic_mode", "one_click"],
+                topic=res.get("topic",""),
+                payload=res,
+                status="new"
+            )
+            st.success("✅ Gotowe — zapisane w Vault.")
+
     b7, b8 = st.columns([1, 1])
     with b7:
         quick_preview = st.button("⚡ Szybka ocena (bez LLM)", use_container_width=True, key="main_quick_preview")
@@ -1398,14 +1467,56 @@ with tab_evaluate:
     
         st.divider()
         st.subheader("Wynik oceny tematu")
-    
+
         score_val = int(res.get("overall_score", res.get("overall_score_base", 0) or 0))
-        st.metric("Ocena", f"{score_val}/100")
+        viral_val = int(res.get("viral_score", {}).get("viral_score", 0))
+        score_color = "#4CAF50" if score_val >= 70 else "#FFC107" if score_val >= 50 else "#f44336"
+        viral_color = "#4CAF50" if viral_val >= 70 else "#FFC107" if viral_val >= 50 else "#f44336"
+        verdict = "PASS" if score_val >= 75 else "BORDER" if score_val >= 60 else "FAIL"
+        verdict_color = "#2d5a3d" if verdict == "PASS" else "#4a4000" if verdict == "BORDER" else "#4a1a1a"
+
+        col_score, col_viral = st.columns([1, 1])
+        with col_score:
+            st.markdown(f"""
+            <div style="background: linear-gradient(135deg, {score_color}33, {score_color}11); padding: 1rem; border-radius: 10px; text-align: center;">
+                <div style="font-size: 2rem; font-weight: bold; color: {score_color};">{score_val}/100</div>
+                <div style="font-size: 0.8rem; color: #888;">Overall Score</div>
+            </div>
+            """, unsafe_allow_html=True)
+        with col_viral:
+            st.markdown(f"""
+            <div style="background: linear-gradient(135deg, {viral_color}33, {viral_color}11); padding: 1rem; border-radius: 10px; text-align: center;">
+                <div style="font-size: 1.5rem; font-weight: bold; color: {viral_color};">{viral_val}/100</div>
+                <div style="font-size: 0.8rem; color: #888;">Viral Score</div>
+            </div>
+            """, unsafe_allow_html=True)
+        st.markdown(
+            f"<div class='section-card' style='background:{verdict_color};'>"
+            f"<h4>Werdykt: {verdict}</h4>"
+            f"<div>Rekomendacja: {'publikuj' if verdict == 'PASS' else 'popraw i testuj' if verdict == 'BORDER' else 'przemyśl temat'}</div>"
+            f"</div>",
+            unsafe_allow_html=True,
+        )
+
         if res.get("recommendation"):
             st.info(res.get("recommendation"))
         if not api_key:
             st.warning("Tryb bez API: tytuły/obietnice z szablonów, bez LLM.")
-    
+
+        comp = res.get("competition", {})
+        trend = res.get("trends", {}).get("overall", {})
+
+        st.markdown("#### ✅ Najważniejsze wnioski")
+        takeaway_cols = st.columns(4)
+        with takeaway_cols[0]:
+            st.metric("Overall", f"{score_val}/100")
+        with takeaway_cols[1]:
+            st.metric("Viral", f"{viral_val}/100")
+        with takeaway_cols[2]:
+            st.metric("Trend", f"{trend.get('score', 0) if trend else 0}")
+        with takeaway_cols[3]:
+            st.metric("Opportunity", f"{comp.get('opportunity_score', 0)}")
+
         # Timeline
         if res.get("performance_timeline"):
             tl = res["performance_timeline"]
@@ -1419,50 +1530,200 @@ with tab_evaluate:
         # Quick signals
         c1, c2, c3 = st.columns(3)
         with c1:
-            comp = res.get("competition", {})
             st.metric("Konkurencja (opportunity)", f"{comp.get('opportunity_score', 0)}")
         with c2:
-            viral = res.get("viral_score", {})
-            st.metric("Viral Score", f"{viral.get('viral_score', 0)}")
+            st.metric("Viral Score", f"{viral_val}")
         with c3:
-            trend = res.get("trends", {}).get("overall", {})
             st.metric("Trend Score", f"{trend.get('score', 0) if trend else 0}")
 
         if merged_df is None or "views" not in merged_df.columns:
             st.info("⚠️ Brak danych kanału (views). Wynik jest w trybie uproszczonym.")
 
         st.markdown("### Dlaczego taki wynik?")
-        explainer = {
-            "base_overall": res.get("overall_score_base", 0),
-            "trend_bonus": res.get("trend_bonus", 0),
-            "similar_bonus": res.get("similar_bonus", 0)
-        }
-        st.json(explainer)
+        base_overall = int(res.get("overall_score_base", 0))
+        trend_bonus = int(res.get("trend_bonus", 0))
+        similar_bonus = int(res.get("similar_bonus", 0))
+        total_calc = max(0, min(100, base_overall + trend_bonus + similar_bonus))
+
+        explainer_cols = st.columns(4)
+        with explainer_cols[0]:
+            st.metric("Base score", f"{base_overall}/100")
+        with explainer_cols[1]:
+            st.metric("Trend bonus", f"{trend_bonus:+d}")
+        with explainer_cols[2]:
+            st.metric("Similar bonus", f"{similar_bonus:+d}")
+        with explainer_cols[3]:
+            st.metric("Final", f"{total_calc}/100")
+
+        st.progress(min(1.0, total_calc / 100.0))
         if res.get("competition"):
             st.caption(f"Konkurencja: {res['competition'].get('saturation','?')} | Opportunity: {res['competition'].get('opportunity_score','?')}")
+
+        st.markdown("#### 🧾 Szybkie uzasadnienie (3 punkty)")
+        reasons = [
+            f"Base score: {base_overall}/100 (siła tytułu + sygnały bazowe)",
+            f"Trend bonus: {trend_bonus:+d} (Trends/External)",
+            f"Similar bonus: {similar_bonus:+d} (dopasowanie do hitów kanału)",
+        ]
+        for r in reasons:
+            st.markdown(f"- {r}")
+
+        st.markdown("#### 📊 Udział składników (wizualnie)")
+        base_pct = max(0, min(100, base_overall))
+        trend_pct = max(0, min(100, abs(trend_bonus) * 5))
+        similar_pct = max(0, min(100, abs(similar_bonus) * 5))
+        st.markdown(
+            f"<div class='section-card'>"
+            f"<div>Base</div>"
+            f"<div style='background:#222;border-radius:6px;height:10px;'><div style='width:{base_pct}%;height:10px;background:#4CAF50;border-radius:6px;'></div></div>"
+            f"<div style='margin-top:6px;'>Trend</div>"
+            f"<div style='background:#222;border-radius:6px;height:10px;'><div style='width:{trend_pct}%;height:10px;background:#FFC107;border-radius:6px;'></div></div>"
+            f"<div style='margin-top:6px;'>Similar</div>"
+            f"<div style='background:#222;border-radius:6px;height:10px;'><div style='width:{similar_pct}%;height:10px;background:#90EE90;border-radius:6px;'></div></div>"
+            f"</div>",
+            unsafe_allow_html=True,
+        )
+
+        if res.get("risk_flags"):
+            st.markdown("#### 🚩 Czerwone flagi")
+            st.warning(" | ".join(res.get("risk_flags", [])))
+
+        st.markdown("### 🚀 Szybkie akcje")
+        qa1, qa2, qa3 = st.columns(3)
+        with qa1:
+            if st.button("🔄 Nowe tytuły", key="quick_regen_titles"):
+                if st.session_state.topic_job_main:
+                    st.session_state.topic_job_main["stage_done"] = 2
+                    st.session_state.topic_result_main = st.session_state.topic_job_main.get("result")
+                st.session_state.topic_job_main = st.session_state.topic_job_main or {
+                    "topic": res.get("topic", ""),
+                    "n_titles": n_titles_main,
+                    "n_promises": n_promises_main,
+                    "api_key": api_key,
+                    "result": {"topic": res.get("topic", ""), "timestamp": datetime.now().isoformat()}
+                }
+                st.session_state.topic_job_main["n_titles"] = n_titles_main
+                st.session_state.topic_job_main = _topic_stage_run(3, st.session_state.topic_job_main)
+                st.session_state.topic_result_main = st.session_state.topic_job_main.get("result")
+                st.rerun()
+        with qa2:
+            if st.button("🔄 Nowe obietnice", key="quick_regen_promises"):
+                if st.session_state.topic_job_main:
+                    st.session_state.topic_job_main["stage_done"] = 3
+                    st.session_state.topic_result_main = st.session_state.topic_job_main.get("result")
+                st.session_state.topic_job_main = st.session_state.topic_job_main or {
+                    "topic": res.get("topic", ""),
+                    "n_titles": n_titles_main,
+                    "n_promises": n_promises_main,
+                    "api_key": api_key,
+                    "result": {"topic": res.get("topic", ""), "timestamp": datetime.now().isoformat()}
+                }
+                st.session_state.topic_job_main["n_promises"] = n_promises_main
+                st.session_state.topic_job_main = _topic_stage_run(4, st.session_state.topic_job_main)
+                st.session_state.topic_result_main = st.session_state.topic_job_main.get("result")
+                st.rerun()
+        with qa3:
+            if st.button("💾 Zapisz wynik do Vault", key="quick_save_topic"):
+                best_title = (res.get("selected_title") or {}).get("title") or f"Temat: {res.get('topic','')}"
+                best_promise = (res.get("promises") or [{}])[0].get("promise", "")
+                score = int(res.get("overall_score", res.get("overall_score_base", 0) or 0))
+                vault.add(
+                    title=best_title,
+                    promise=best_promise,
+                    score=score,
+                    reason="Ocena tematu - szybki zapis",
+                    tags=["topic_mode"],
+                    topic=res.get("topic",""),
+                    payload=res,
+                    status="new"
+                )
+                st.success("✅ Zapisano do Vault.")
     
         # Titles with tooltips
         st.markdown("### Proponowane tytuły")
         if res.get("titles"):
             titles = res["titles"]
-            # selection
-            title_opts = [t.get("title","") for t in titles]
-            selected_title_str = st.selectbox("Wybierz tytuł do dalszej oceny", title_opts, index=0, key="main_selected_title")
-            selected_obj = next((t for t in titles if t.get("title")==selected_title_str), titles[0])
-            res["selected_title"] = selected_obj
-    
-            for t in titles:
+            top_titles = titles[:3]
+            st.markdown("**Top 3 (na start):**")
+            for t in top_titles:
                 reason = t.get("reasoning") or t.get("reason") or t.get("calculated_reasoning", "")
-                badge = _score_badge(int(t.get("score",0)), reason)
-                st.markdown(f"{badge} <b>{t.get('title','')}</b>", unsafe_allow_html=True)
-                with st.expander("Dlaczego ten tytuł?", expanded=False):
+                short_reason = f"{reason.split('.')[0]}." if reason else ""
+                badge = _score_badge(int(t.get("score", 0)), reason)
+                st.markdown(f"{badge} <b>{t.get('title','')}</b> — {short_reason}", unsafe_allow_html=True)
+            title_opts = [t.get("title","") for t in titles]
+            selected_title_str = st.radio(
+                "Wybierz tytuł do dalszej oceny",
+                title_opts,
+                index=0,
+                key="main_selected_title",
+                horizontal=False,
+            )
+            selected_obj = next((t for t in titles if t.get("title") == selected_title_str), titles[0])
+            res["selected_title"] = selected_obj
+
+            reason = selected_obj.get("reasoning") or selected_obj.get("reason") or selected_obj.get("calculated_reasoning", "")
+            st.markdown("<div class='section-card'>", unsafe_allow_html=True)
+            st.markdown(f"**Wybrany tytuł:** {selected_obj.get('title','')}")
+            if reason:
+                st.markdown(reason)
+            st.caption(f"Źródło: {selected_obj.get('source','?')} | Styl: {selected_obj.get('style','?')}")
+            st.markdown("</div>", unsafe_allow_html=True)
+
+            with st.expander("Pełna lista tytułów", expanded=False):
+                for t in titles:
+                    reason = t.get("reasoning") or t.get("reason") or t.get("calculated_reasoning", "")
+                    badge = _score_badge(int(t.get("score", 0)), reason)
+                    st.markdown(f"{badge} <b>{t.get('title','')}</b>", unsafe_allow_html=True)
                     if reason:
-                        st.markdown(reason)
-                    st.caption(f"Źródło: {t.get('source','?')} | Styl: {t.get('style','?')}")
-                    if t.get("calculated_score") is not None:
-                        st.caption(f"Calculated score: {t.get('calculated_score')}")
-                    if t.get("tags"):
-                        st.caption("Tagi: " + ", ".join(t.get("tags", [])))
+                        st.caption(reason)
+
+            st.markdown("#### ✍️ Szybkie przepisanie tytułu")
+            rewrite_style = st.selectbox(
+                "Styl przepisu",
+                ["bardziej konkretny", "bardziej tajemniczy", "krótszy", "bardziej emocjonalny"],
+                key="rewrite_style",
+            )
+            if st.button("⚡ Przepisz tytuł", key="rewrite_title"):
+                if not api_key:
+                    st.warning("Dodaj OpenAI API Key aby przepisać tytuł.")
+                else:
+                    try:
+                        from openai import OpenAI
+                        client = OpenAI(api_key=api_key)
+                        prompt = f"Napisz 1 wariant tytułu w stylu: {rewrite_style}. Oryginał: {selected_title_str}"
+                        resp = client.chat.completions.create(
+                            model=config.get("openai_model", "gpt-4o-mini"),
+                            messages=[{"role": "user", "content": prompt}],
+                            temperature=0.7,
+                        )
+                        rewritten = resp.choices[0].message.content.strip()
+                        st.success(rewritten)
+                    except Exception as e:
+                        st.warning(f"Nie udało się przepisać tytułu: {e}")
+
+            st.markdown("#### ⚖️ Porównaj 2 tytuły (szybko)")
+            cmp1, cmp2 = st.columns(2)
+            with cmp1:
+                title_a = st.text_input("Tytuł A", value=title_opts[0], key="compare_title_a")
+            with cmp2:
+                title_b = st.text_input("Tytuł B", value=title_opts[1] if len(title_opts) > 1 else "", key="compare_title_b")
+            if st.button("Porównaj tytuły", key="compare_titles"):
+                if not api_key:
+                    st.warning("Dodaj OpenAI API Key aby porównać tytuły.")
+                else:
+                    try:
+                        from openai import OpenAI
+                        client = OpenAI(api_key=api_key)
+                        prompt = f"Porównaj dwa tytuły i wskaż lepszy. A: {title_a} B: {title_b}. Zwróć krótki werdykt."
+                        resp = client.chat.completions.create(
+                            model=config.get("openai_model", "gpt-4o-mini"),
+                            messages=[{"role": "user", "content": prompt}],
+                            temperature=0.3,
+                        )
+                        verdict = resp.choices[0].message.content.strip()
+                        st.info(verdict)
+                    except Exception as e:
+                        st.warning(f"Nie udało się porównać tytułów: {e}")
         else:
             st.warning("Brak wygenerowanych tytułów.")
     
@@ -1470,16 +1731,55 @@ with tab_evaluate:
         st.markdown("### Proponowane obietnice (hook/promise)")
         if res.get("promises"):
             promises = res["promises"]
-            promise_opts = [p.get("promise","") for p in promises]
-            chosen_promise = st.selectbox("Wybierz obietnicę", promise_opts, index=0, key="main_selected_promise")
-            for p in promises:
+            top_promises = promises[:3]
+            st.markdown("**Top 3 (na start):**")
+            for p in top_promises:
                 reason = p.get("reasoning") or p.get("reason") or ""
-                badge = _score_badge(int(p.get("score",0)), reason)
-                st.markdown(f"{badge} {p.get('promise','')}", unsafe_allow_html=True)
-                with st.expander("Dlaczego ta obietnica?", expanded=False):
+                short_reason = f"{reason.split('.')[0]}." if reason else ""
+                badge = _score_badge(int(p.get("score", 0)), reason)
+                st.markdown(f"{badge} {p.get('promise','')} — {short_reason}", unsafe_allow_html=True)
+            promise_opts = [p.get("promise","") for p in promises]
+            chosen_promise = st.radio(
+                "Wybierz obietnicę",
+                promise_opts,
+                index=0,
+                key="main_selected_promise",
+            )
+            selected_promise_obj = next((p for p in promises if p.get("promise") == chosen_promise), promises[0])
+            reason = selected_promise_obj.get("reasoning") or selected_promise_obj.get("reason") or ""
+            st.markdown("<div class='section-card'>", unsafe_allow_html=True)
+            st.markdown(f"**Wybrana obietnica:** {selected_promise_obj.get('promise','')}")
+            if reason:
+                st.markdown(reason)
+            st.caption(f"Źródło: {selected_promise_obj.get('source','?')}")
+            st.markdown("</div>", unsafe_allow_html=True)
+
+            with st.expander("Pełna lista obietnic", expanded=False):
+                for p in promises:
+                    reason = p.get("reasoning") or p.get("reason") or ""
+                    badge = _score_badge(int(p.get("score", 0)), reason)
+                    st.markdown(f"{badge} {p.get('promise','')}", unsafe_allow_html=True)
                     if reason:
-                        st.markdown(reason)
-                    st.caption(f"Źródło: {p.get('source','?')}")
+                        st.caption(reason)
+
+            st.markdown("#### 🧪 Szybka ocena hooka")
+            hook_text = st.text_area("Wklej hook (2-3 zdania)", key="hook_quick_text", height=80)
+            if st.button("Oceń hook", key="hook_quick_btn"):
+                if not api_key:
+                    st.warning("Dodaj OpenAI API Key aby ocenić hook.")
+                else:
+                    try:
+                        from openai import OpenAI
+                        client = OpenAI(api_key=api_key)
+                        prompt = f"Oceń hook (0-100) i podaj 1 zdanie uzasadnienia. Hook: {hook_text}"
+                        resp = client.chat.completions.create(
+                            model=config.get("openai_model", "gpt-4o-mini"),
+                            messages=[{"role": "user", "content": prompt}],
+                            temperature=0.4,
+                        )
+                        st.info(resp.choices[0].message.content.strip())
+                    except Exception as e:
+                        st.warning(f"Nie udało się ocenić hooka: {e}")
         else:
             st.info("Brak obietnic. Uruchom etap generacji obietnic.")
     
@@ -1555,352 +1855,7 @@ with tab_evaluate:
                 st.session_state.topic_result_main = None
                 st.session_state.topic_job_main = None
     
-    st.divider()
-    with st.expander("🧱 Tryb legacy: oceń tytuł ręcznie", expanded=False):
-        st.caption("Opcjonalny tryb: wpisujesz tytuł i obietnicę ręcznie.")
-
-        # Input
-        col_input, col_settings = st.columns([3, 1])
-        
-        with col_input:
-            title = st.text_input(
-                "📹 Tytuł filmu",
-                placeholder="np. Dlaczego ta katastrofa MUSIAŁA się wydarzyć?"
-            )
-            
-            promise = st.text_area(
-                "💬 Obietnica (opcjonalnie)",
-                placeholder="Co widz dowie się z filmu? Jaka jest główna wartość?",
-                height=80
-            )
-            
-            # Generuj obietnice
-            if title and ADVANCED_AVAILABLE and api_key:
-                if st.button("✨ Generuj propozycje obietnic"):
-                    with st.spinner("Generuję..."):
-                        try:
-                            from openai import OpenAI
-                            client = OpenAI(api_key=api_key)
-                            gen = PromiseGenerator(client)
-                            promises = gen.generate_from_title(title, n=5)
-                            
-                            st.markdown("**Propozycje obietnic:**")
-                            for i, p in enumerate(promises, 1):
-                                prom = p.get("promise", p) if isinstance(p, dict) else p
-                                st.markdown(f"{i}. {prom}")
-                        except Exception as e:
-                            st.error(f"Błąd: {e}")
-        
-        with col_settings:
-            st.markdown("**⚙️ Ustawienia**")
-            
-            n_judges = st.slider(
-                "Liczba sędziów LLM",
-                1, 3, config.get("default_judges", 2),
-                help=TOOLTIPS["judges"]
-            )
-            
-            topn_examples = st.slider(
-                "Podobne przykłady",
-                3, 10, config.get("default_topn", 5),
-                help=TOOLTIPS["topn"]
-            )
-            
-            optimize_variants = st.checkbox(
-                "Optymalizuj warianty",
-                value=config.get("default_optimize_variants", False),
-                help=TOOLTIPS["optimize"]
-            )
-        
-        # Evaluate button
-        evaluate_btn = st.button("🚀 OCEŃ POMYSŁ", type="primary", use_container_width=True)
-        
-        if evaluate_btn:
-            if not api_key:
-                st.error("❌ Ustaw OpenAI API Key w panelu bocznym")
-            elif not title:
-                st.error("❌ Wpisz tytuł filmu")
-            elif merged_df is None or len(merged_df) < 5:
-                st.error("❌ Załaduj dane kanału (min. 5 filmów)")
-            else:
-                with st.spinner("🔄 Analizuję pomysł... (może potrwać 15-30s)"):
-                    try:
-                        # Get data path
-                        synced_file = CHANNEL_DATA_DIR / "synced_channel_data.csv"
-                        data_path = str(synced_file) if synced_file.exists() else str(MERGED_DATA_FILE)
-                        
-                        # Initialize evaluator
-                        evaluator = get_evaluator(api_key, data_path)
-                        
-                        # Evaluate
-                        result = evaluator.evaluate(
-                            title=title,
-                            promise=promise,
-                            topn=topn_examples,
-                            n_judges=n_judges,
-                            optimize=optimize_variants
-                        )
-                        
-                        # Add advanced analytics
-                        advanced_bonus = 0
-                        advanced_insights = {}
-                        
-                        if ADVANCED_AVAILABLE:
-                            try:
-                                analytics = get_advanced_analytics(data_path, api_key)
-                                if analytics:
-                                    adv_result = analytics.analyze_idea(title, promise)
-                                    advanced_insights = adv_result.get("analyses", {})
-                                    advanced_bonus = adv_result.get("total_bonus", 0)
-                                    
-                                    result["advanced_bonus"] = advanced_bonus
-                                    result["advanced_insights"] = advanced_insights
-                                    result["final_score_with_bonus"] = min(100, max(0, result["final_score"] + advanced_bonus))
-                            except Exception as e:
-                                st.warning(f"⚠️ Advanced analytics error: {e}")
-                        
-                        # Save to history
-                        eval_id = history.add(result)
-                        
-                        # SAVE TO SESSION STATE
-                        st.session_state.last_result = result
-                        st.session_state.last_title = title
-                        st.session_state.last_promise = promise
-                        
-                    except Exception as e:
-                        st.error(f"❌ Błąd oceny: {e}")
-                        st.exception(e)
-        
-        # ========== DISPLAY RESULTS FROM SESSION STATE ==========
-        # Wyświetla wyniki nawet po przełączeniu zakładek
-        
-        if st.session_state.last_result is not None:
-            result = st.session_state.last_result
-            
-            st.divider()
-            
-            # Clear button
-            col_clear, col_info = st.columns([1, 4])
-            with col_clear:
-                if st.button("🗑️ Wyczyść wyniki"):
-                    st.session_state.last_result = None
-                    st.session_state.last_title = ""
-                    st.session_state.last_promise = ""
-                    st.rerun()
-            with col_info:
-                st.caption(f"Ostatnia ocena: **{st.session_state.last_title[:50]}...**")
-            
-            # Verdict
-            render_verdict_card(result)
-            
-            # Diagnosis
-            render_diagnosis(result)
-            
-            # Two columns: dimensions + advanced
-            col1, col2 = st.columns([1, 1])
-            
-            with col1:
-                st.subheader("📐 Wymiary oceny")
-                render_dimensions(result)
-            
-            with col2:
-                render_advanced_insights(result)
-            
-            st.divider()
-            
-            # Improvements
-            render_improvements(result)
-            
-            # Hook suggestion
-            hook = result.get("suggested_hook_angle", "")
-            emotion = result.get("target_emotion", "")
-            if hook or emotion:
-                st.subheader("🎣 Sugestia hooka")
-                if hook:
-                    st.info(f"**Kąt:** {hook}")
-                if emotion:
-                    st.caption(f"**Docelowa emocja:** {emotion}")
-            
-            st.divider()
-            
-            # Variants with scores
-            st.subheader("📝 Warianty")
-            try:
-                synced_file = CHANNEL_DATA_DIR / "synced_channel_data.csv"
-                data_path = str(synced_file) if synced_file.exists() else str(MERGED_DATA_FILE)
-                analytics_for_scores = get_advanced_analytics(data_path, api_key) if ADVANCED_AVAILABLE else None
-                render_variants_with_scores(result, analytics=analytics_for_scores)
-            except:
-                render_variants_with_scores(result, analytics=None)
-            
-            st.divider()
-            
-            # Copy report
-            render_copy_report(result)
-            
-            # Save to vault option
-            with st.expander("💡 Zapisz do Idea Vault"):
-                vault_reason = st.text_input("Dlaczego zapisujesz na później?", key="vault_reason")
-                vault_tags = st.text_input("Tagi (przecinki)", key="vault_tags")
-                remind = st.selectbox("Przypomnij gdy:", 
-                    ["Nie przypominaj", "30 dni", "60 dni", "90 dni", "Temat zacznie trendować"],
-                    key="vault_remind"
-                )
-                
-                if st.button("💾 Zapisz do Vault"):
-                    remind_map = {
-                        "30 dni": "30_days",
-                        "60 dni": "60_days",
-                        "90 dni": "90_days",
-                        "Temat zacznie trendować": "trending",
-                    }
-                    tags = [t.strip() for t in vault_tags.split(",") if t.strip()]
-                    vault.add(
-                        title=st.session_state.last_title,
-                        promise=st.session_state.last_promise,
-                        score=result.get("final_score", 0),
-                        reason=vault_reason,
-                        tags=tags,
-                        remind_when=remind_map.get(remind),
-                        status="new"
-                    )
-                    st.success("✅ Zapisano do Vault!")
     
-# =============================================================================
-# TAB: PORÓWNAJ POMYSŁY
-# =============================================================================
-
-with tab_compare:
-    st.header("⚖️ Porównaj pomysły")
-    st.markdown("Wrzuć 2-5 pomysłów i zobacz który najlepszy")
-    
-    # Input for multiple ideas
-    num_ideas = st.slider("Ile pomysłów porównać?", 2, 5, 3)
-    
-    ideas = []
-    for i in range(num_ideas):
-        with st.expander(f"💡 Pomysł {i+1}", expanded=(i < 2)):
-            t = st.text_input(f"Tytuł {i+1}", key=f"comp_title_{i}")
-            p = st.text_area(f"Obietnica {i+1}", key=f"comp_promise_{i}", height=60)
-            if t:
-                ideas.append({"title": t, "promise": p})
-    
-    if st.button("🏆 PORÓWNAJ", type="primary", disabled=len(ideas) < 2):
-        if not api_key:
-            st.error("❌ Ustaw API Key")
-
-        elif merged_df is None:
-            st.error("❌ Załaduj dane kanału")
-        else:
-            with st.spinner("Porównuję pomysły..."):
-                try:
-                    data_path = str(CHANNEL_DATA_DIR / "synced_channel_data.csv") if (CHANNEL_DATA_DIR / "synced_channel_data.csv").exists() else str(MERGED_DATA_FILE)
-                    analytics = get_advanced_analytics(data_path, api_key)
-                    
-                    if analytics:
-                        comparison = analytics.compare_ideas(ideas)
-                        st.session_state.comparison_result = comparison
-                    else:
-                        st.error("Analytics niedostępne")
-                        
-                except Exception as e:
-                    st.error(f"Błąd: {e}")
-    
-    # Display comparison results from session state
-    if st.session_state.comparison_result is not None:
-        comparison = st.session_state.comparison_result
-        
-        st.divider()
-        
-        col_clear, col_info = st.columns([1, 4])
-        with col_clear:
-            if st.button("🗑️ Wyczyść porównanie"):
-                st.session_state.comparison_result = None
-                st.rerun()
-        
-        # Summary
-        st.markdown(f"### {comparison.get('comparison_summary', '')}")
-        
-        # Ranking
-        st.subheader("🏆 Ranking")
-        
-        for item in comparison.get("ranking", []):
-            rank = item["rank"]
-            medal = "🥇" if rank == 1 else "🥈" if rank == 2 else "🥉" if rank == 3 else f"#{rank}"
-            
-            score = item["score"]
-            color = "#2d5a3d" if score >= 65 else "#4a4000" if score >= 50 else "#4a1a1a"
-            
-            st.markdown(f"""
-            <div style="background: {color}; padding: 1rem; border-radius: 8px; margin: 0.5rem 0;">
-                <span style="font-size: 1.5rem;">{medal}</span>
-                <strong>{item['title'][:50]}...</strong>
-                <span style="float: right; font-size: 1.3rem; font-weight: bold;">{score:.0f}/100</span>
-                <div style="opacity: 0.7; font-size: 0.9rem;">Bonus: {item['bonus']:+d}</div>
-            </div>
-            """, unsafe_allow_html=True)
-    
-    st.divider()
-    
-    # A/B Title Tester
-    st.subheader("🔀 A/B Title Tester")
-    st.markdown("Porównaj 2 wersje tytułu")
-    
-    col1, col2 = st.columns(2)
-    with col1:
-        title_a = st.text_input("Tytuł A", key="ab_title_a")
-    with col2:
-        title_b = st.text_input("Tytuł B", key="ab_title_b")
-    
-    if st.button("🔍 Porównaj tytuły") and title_a and title_b:
-        if merged_df is not None and ADVANCED_AVAILABLE:
-            tester = ABTitleTester(merged_df)
-            result = tester.compare(title_a, title_b)
-            st.session_state.ab_result = result
-        else:
-            st.warning("Załaduj dane kanału aby użyć A/B testera")
-    
-    # Display A/B results from session state
-    if st.session_state.ab_result is not None:
-        result = st.session_state.ab_result
-        winner = result["winner"]
-        
-        st.divider()
-        
-        col_clear, _ = st.columns([1, 4])
-        with col_clear:
-            if st.button("🗑️ Wyczyść A/B test"):
-                st.session_state.ab_result = None
-                st.rerun()
-        
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            is_winner = winner == "A"
-            st.markdown(f"""
-            <div style="background: {'#2d5a3d' if is_winner else '#3a3a3a'}; padding: 1rem; border-radius: 8px;">
-                <div style="font-size: 1.5rem;">{'🏆' if is_winner else ''} Tytuł A</div>
-                <div style="font-size: 2rem; font-weight: bold;">{result['title_a']['score']:.0f}</div>
-            </div>
-            """, unsafe_allow_html=True)
-            
-            for factor in result['title_a']['factors']:
-                st.markdown(f"- {factor}")
-        
-        with col2:
-            is_winner = winner == "B"
-            st.markdown(f"""
-            <div style="background: {'#2d5a3d' if is_winner else '#3a3a3a'}; padding: 1rem; border-radius: 8px;">
-                <div style="font-size: 1.5rem;">{'🏆' if is_winner else ''} Tytuł B</div>
-                <div style="font-size: 2rem; font-weight: bold;">{result['title_b']['score']:.0f}</div>
-            </div>
-            """, unsafe_allow_html=True)
-            
-            for factor in result['title_b']['factors']:
-                st.markdown(f"- {factor}")
-        
-        st.info(f"💡 {result['recommendation']}")
-
 # =============================================================================
 # TAB: NARZĘDZIA
 # =============================================================================
@@ -1909,316 +1864,15 @@ with tab_tools:
     st.header("🛠️ Narzędzia")
     
     tool_tabs = st.tabs([
-        "🎯 Oceń TEMAT",
         "📉 Dlaczego wtopa?",
         "🕳️ Content Gaps",
-        "📺 Analiza serii",
         "📅 Kalendarz",
         "🔔 Trend Alerts",
         "👀 Competitor Tracker"
     ])
     
-    # ==========================================================================
-    # NOWY: OCEŃ TEMAT (v4 feature)
-    # ==========================================================================
-    with tool_tabs[0]:
-        st.subheader("🎯 Oceń TEMAT na film")
-        st.markdown("""
-        **NOWOŚĆ w v4!** Wpisz tylko **TEMAT** (np. "Operacja Northwoods") - AI wygeneruje:
-        - 📝 Tytuły z ocenami i uzasadnieniami
-        - 💬 Obietnice (hooki) z ocenami
-        - 📊 Analiza konkurencji na YouTube
-        - 🚀 Viral Score
-        - 📅 Sezonowość i świeżość tematu
-        """)
-        
-        if not TOPIC_ANALYZER_AVAILABLE:
-            st.error("❌ Moduł topic_analyzer.py niedostępny. Sprawdź czy plik istnieje.")
-        else:
-            # Input
-            topic_input = st.text_input(
-                "🎬 Temat filmu",
-                placeholder="np. Operacja Northwoods, Katastrofa w Czarnobylu, Sekta Jonestown...",
-                help="Wpisz sam temat - AI wygeneruje tytuły i obietnice"
-            )
-            
-            col_set1, col_set2 = st.columns(2)
-            with col_set1:
-                n_titles = st.slider("Liczba tytułów", 5, 15, 10, help="Ile propozycji tytułów wygenerować")
-            with col_set2:
-                n_promises = st.slider("Liczba obietnic", 3, 10, 5, help="Ile propozycji hooków wygenerować")
-            
-            # Evaluate button
-            if st.button("🚀 ANALIZUJ TEMAT", type="primary", use_container_width=True, key="analyze_topic_btn"):
-                if not topic_input:
-                    st.warning("⚠️ Wpisz temat")
-                elif not api_key:
-                    st.error("❌ Ustaw API Key OpenAI w panelu bocznym")
-                else:
-                    with st.spinner("🔄 Analizuję temat... (może potrwać 30-60s)"):
-                        try:
-                            from openai import OpenAI
-                            client = OpenAI(api_key=api_key)
-                            
-                            # Get channel data if available
-                            channel_df = merged_df if merged_df is not None else None
-                            
-                            # Create evaluator and evaluate
-                            evaluator = get_topic_evaluator(client, channel_df)
-                            result = evaluator.evaluate(topic_input, n_titles=n_titles, n_promises=n_promises)
-                            
-                            # Get external data
-                            try:
-                                wiki = get_wiki_api()
-                                news = get_news_checker()
-                                seasonality = get_seasonality()
-                                
-                                result['external_data'] = {
-                                    'wikipedia': wiki.get_topic_popularity(topic_input),
-                                    'news': news.get_news_score(topic_input),
-                                    'seasonality': seasonality.analyze_topic_seasonality(topic_input),
-                                }
-                            except Exception as ext_e:
-                                result['external_data'] = {'error': str(ext_e)}
-                            
-                            # Store in session state
-                            st.session_state['topic_result'] = result
-                            
-                        except Exception as e:
-                            st.error(f"❌ Błąd: {e}")
-                            st.exception(e)
-            
-            # Display results
-            if 'topic_result' in st.session_state and st.session_state['topic_result']:
-                result = st.session_state['topic_result']
-                
-                st.divider()
-                
-                # Header with scores
-                col1, col2, col3 = st.columns([2, 1, 1])
-                
-                with col1:
-                    st.markdown(f"### 📊 Wynik: **{result.get('topic', '')}**")
-                    st.markdown(result.get('recommendation', ''))
-                
-                with col2:
-                    overall = result.get('overall_score', 0)
-                    color = "#4CAF50" if overall >= 70 else "#FFC107" if overall >= 50 else "#f44336"
-                    st.markdown(f"""
-                    <div style="background: linear-gradient(135deg, {color}33, {color}11); padding: 1rem; border-radius: 10px; text-align: center;">
-                        <div style="font-size: 2rem; font-weight: bold; color: {color};">{overall}/100</div>
-                        <div style="font-size: 0.8rem; color: #888;">Overall Score</div>
-                    </div>
-                    """, unsafe_allow_html=True)
-                
-                with col3:
-                    viral = result.get('viral_score', {}).get('viral_score', 0)
-                    vcolor = "#4CAF50" if viral >= 70 else "#FFC107" if viral >= 50 else "#f44336"
-                    st.markdown(f"""
-                    <div style="background: linear-gradient(135deg, {vcolor}33, {vcolor}11); padding: 1rem; border-radius: 10px; text-align: center;">
-                        <div style="font-size: 1.5rem; font-weight: bold; color: {vcolor};">{viral}/100</div>
-                        <div style="font-size: 0.8rem; color: #888;">Viral Score</div>
-                    </div>
-                    """, unsafe_allow_html=True)
-                
-                st.divider()
-                
-                # Titles section
-                st.subheader("📝 Wygenerowane tytuły")
-                st.caption("Kliknij na tytuł aby zobaczyć uzasadnienie. Najlepszy jest na górze.")
-                
-                titles = result.get('titles', [])
-                selected_title_idx = st.session_state.get('selected_topic_title_idx', 0)
-                
-                for i, t in enumerate(titles):
-                    col_t, col_s = st.columns([5, 1])
-                    
-                    with col_t:
-                        is_selected = (i == selected_title_idx)
-                        btn_label = f"{'✅ ' if is_selected else ''}{t['title']}"
-                        if st.button(btn_label, key=f"topic_title_{i}", use_container_width=True):
-                            st.session_state['selected_topic_title_idx'] = i
-                            st.rerun()
-                    
-                    with col_s:
-                        score = t.get('score', 0)
-                        sc = "#4CAF50" if score >= 70 else "#FFC107" if score >= 50 else "#f44336"
-                        st.markdown(f"<span style='color:{sc};font-weight:bold;font-size:1.2rem;'>{score}</span>", unsafe_allow_html=True)
-                    
-                    # Show reasoning if selected
-                    if i == selected_title_idx:
-                        with st.container():
-                            st.markdown(f"""
-                            <div style="background: #1a1a1a; padding: 0.8rem; border-radius: 6px; margin: 0.5rem 0; font-size: 0.85rem;">
-                                <strong>Styl:</strong> {t.get('style', 'N/A')} | <strong>Źródło:</strong> {t.get('source', 'N/A')}<br>
-                                <strong>Uzasadnienie:</strong> {t.get('reasoning', 'Brak')}
-                            </div>
-                            """, unsafe_allow_html=True)
-                
-                st.divider()
-                
-                # Promises section
-                st.subheader("💬 Obietnice (hooki)")
-                
-                promises = result.get('promises', [])
-                for i, p in enumerate(promises):
-                    col_p, col_ps = st.columns([5, 1])
-                    
-                    with col_p:
-                        st.markdown(f"**{i+1}.** {p.get('promise', '')}")
-                        if p.get('reasoning'):
-                            st.caption(p['reasoning'])
-                    
-                    with col_ps:
-                        pscore = p.get('score', 0)
-                        pc = "#4CAF50" if pscore >= 70 else "#FFC107" if pscore >= 50 else "#f44336"
-                        st.markdown(f"<span style='color:{pc};font-weight:bold;'>{pscore}</span>", unsafe_allow_html=True)
-                
-                st.divider()
-                
-                # Additional analysis tabs
-                st.subheader("🔍 Szczegółowe analizy")
-                
-                analysis_tabs = st.tabs(["📊 Konkurencja", "🚀 Viral", "🎬 Podobne", "🌐 External"])
-                
-                # Competition tab
-                with analysis_tabs[0]:
-                    comp = result.get('competition', {})
-                    
-                    if comp.get('error'):
-                        st.warning(f"⚠️ {comp.get('error')}")
-                    else:
-                        sat = comp.get('saturation', 'UNKNOWN')
-                        sat_colors = {'LOW': '#4CAF50', 'MEDIUM': '#FFC107', 'HIGH': '#f44336'}
-                        sat_color = sat_colors.get(sat, '#888')
-                        
-                        col1, col2 = st.columns(2)
-                        with col1:
-                            st.markdown(f"**Nasycenie rynku:** <span style='color:{sat_color};font-weight:bold;'>{sat}</span>", unsafe_allow_html=True)
-                            st.metric("Szansa", f"{comp.get('opportunity_score', 0)}/100")
-                        with col2:
-                            st.info(comp.get('recommendation', ''))
-                        
-                        top_vids = comp.get('top_videos', [])
-                        if top_vids:
-                            st.markdown("**Top konkurencyjne filmy:**")
-                            for v in top_vids[:5]:
-                                st.caption(f"• {v.get('title', '')[:50]}... - **{v.get('views', 0):,}** views ({v.get('channel', '')})")
-                
-                # Viral tab
-                with analysis_tabs[1]:
-                    viral_data = result.get('viral_score', {})
-                    
-                    st.metric("Viral Score", f"{viral_data.get('viral_score', 0)}/100")
-                    st.markdown(f"**{viral_data.get('verdict', '')}**")
-                    
-                    factors = viral_data.get('factors', [])
-                    if factors:
-                        st.markdown("**Czynniki viralowe:**")
-                        for f in factors:
-                            st.caption(f"• {f.get('factor', '')}: {f.get('bonus', '')} - {', '.join(f.get('found', []))}")
-                    
-                    rec = viral_data.get('recommendation', '')
-                    if rec:
-                        st.info(rec)
-                
-                # Similar videos tab
-                with analysis_tabs[2]:
-                    similar = result.get('similar_hits', [])
-                    
-                    if similar:
-                        st.markdown("**Podobne filmy na Twoim kanale:**")
-                        for s in similar:
-                            col1, col2 = st.columns([3, 1])
-                            with col1:
-                                st.markdown(f"**{s.get('title', '')}**")
-                                st.caption(s.get('insight', ''))
-                            with col2:
-                                st.metric("Views", f"{s.get('views', 0):,}")
-                    else:
-                        st.info("Brak podobnych filmów na kanale. Wgraj dane kanału aby zobaczyć porównanie.")
-                
-                # External data tab
-                with analysis_tabs[3]:
-                    ext = result.get('external_data', {})
-                    
-                    if ext.get('error'):
-                        st.warning(f"⚠️ Dane zewnętrzne niedostępne: {ext.get('error')}")
-                    else:
-                        col1, col2, col3 = st.columns(3)
-                        
-                        with col1:
-                            wiki = ext.get('wikipedia', {})
-                            st.markdown("**📚 Wikipedia**")
-                            st.metric("Pageviews (30d)", f"{wiki.get('total_pageviews_30d', 0):,}")
-                            trend = wiki.get('trend', 'UNKNOWN')
-                            trend_emoji = '📈' if trend == 'RISING' else '📉' if trend == 'FALLING' else '➡️'
-                            st.caption(f"Trend: {trend_emoji} {trend}")
-                        
-                        with col2:
-                            news = ext.get('news', {})
-                            st.markdown("**📰 News**")
-                            st.metric("News Score", f"{news.get('news_score', 0)}/100")
-                            st.caption(news.get('recommendation', '')[:80])
-                            
-                            headlines = news.get('recent_headlines', [])
-                            if headlines:
-                                with st.expander("Headlines"):
-                                    for h in headlines[:3]:
-                                        title = h['title'] if isinstance(h, dict) else h
-                                        st.caption(f"• {title[:60]}...")
-                        
-                        with col3:
-                            season = ext.get('seasonality', {})
-                            st.markdown("**📅 Sezonowość**")
-                            if season.get('has_seasonality'):
-                                st.markdown(f"Peak: **{season.get('peak_month_name', '?')}**")
-                                st.caption(season.get('reason', ''))
-                            else:
-                                st.caption("Temat evergreen")
-                            st.info(season.get('recommendation', '')[:100])
-                
-                st.divider()
-                
-                # Save to vault
-                col_save1, col_save2 = st.columns([2, 1])
-                
-                with col_save1:
-                    topic_notes = st.text_area("Notatki (opcjonalne)", height=80, key="topic_save_notes")
-                    
-                    if st.button("💾 Zapisz do Vault", type="primary", key="save_topic_to_vault"):
-                        vault = get_vault()
-                        
-                        # Prepare data for vault
-                        vault_entry = {
-                            'type': 'topic_evaluation',
-                            'topic': result.get('topic', ''),
-                            'best_title': result.get('selected_title', {}).get('title', ''),
-                            'overall_score': result.get('overall_score', 0),
-                            'viral_score': result.get('viral_score', {}).get('viral_score', 0),
-                            'competition': result.get('competition', {}).get('saturation', ''),
-                            'full_result': result,
-                        }
-                        
-                        vault.add(
-                            title=result.get('selected_title', {}).get('title', f"Temat: {result.get('topic', '')}"),
-                            promise=result.get('promises', [{}])[0].get('promise', ''),
-                            score=result.get('overall_score', 0),
-                            notes=topic_notes,
-                            topic=topic_input,
-                            payload=vault_entry,
-                            status="new"
-                        )
-                        st.success("✅ Zapisano do Vault!")
-                
-                with col_save2:
-                    if st.button("🗑️ Wyczyść wyniki", key="clear_topic_results"):
-                        st.session_state['topic_result'] = None
-                        st.session_state['selected_topic_title_idx'] = 0
-                        st.rerun()
-    
     # --- WTOPA ANALYZER ---
-    with tool_tabs[1]:
+    with tool_tabs[0]:
         st.subheader("📚 Dlaczego wtopa")
         st.markdown("Analizuj dlaczego film mógł mieć słabe wyniki i dostaj konkretne sugestie naprawy")
 
@@ -2259,9 +1913,13 @@ with tab_tools:
 
             st.divider()
 
+        st.session_state.setdefault("wtopa_title", "")
+        st.session_state.setdefault("wtopa_views", 0)
+        st.session_state.setdefault("wtopa_ret", 40.0)
+
         wtopa_title = st.text_input("Tytuł filmu", key="wtopa_title")
-        wtopa_views = st.number_input("Wyświetlenia", min_value=0, value=0, key="wtopa_views")
-        wtopa_retention = st.slider("Retencja (%)", 0.0, 100.0, 40.0, key="wtopa_ret")
+        wtopa_views = st.number_input("Wyświetlenia", min_value=0, key="wtopa_views")
+        wtopa_retention = st.slider("Retencja (%)", 0.0, 100.0, key="wtopa_ret")
 
         with st.expander("🎯 Kontekst", expanded=False):
             wtopa_target = st.text_input("Co miało się wydarzyć? (Twoje założenie)", placeholder="np. 50k views, 45% retencji")
@@ -2300,7 +1958,7 @@ with tab_tools:
             with st.expander("📦 Pełny wynik", expanded=False):
                 st.json(result)
 
-    with tool_tabs[2]:
+    with tool_tabs[1]:
         st.subheader("🕳️ Content Gap Finder")
         st.markdown("Tematy popularne w niszy, których jeszcze nie robiłeś")
         
@@ -2310,116 +1968,57 @@ with tab_tools:
             
             st.divider()
             
+            channel_median_views = None
+            channel_avg_views = None
+            channel_avg_retention = None
+            if "views" in merged_df.columns:
+                channel_median_views = int(merged_df["views"].median())
+                channel_avg_views = int(merged_df["views"].mean())
+            if "retention" in merged_df.columns and merged_df["retention"].notna().any():
+                channel_avg_retention = float(merged_df["retention"].mean())
+
             for gap in gaps[:15]:
                 covered = gap["covered"]
                 icon = "🟡" if covered else "🟢"
-                
-                st.markdown(f"""
-                {icon} **{gap['topic'].title()}** - {gap['recommendation']}
-                """)
-                
+                topic = gap["topic"]
+                topic_mask = merged_df["title"].astype(str).str.lower().str.contains(topic)
+                topic_df = merged_df[topic_mask]
+                topic_count = int(topic_df.shape[0])
+                topic_avg_views = int(topic_df["views"].mean()) if topic_count and "views" in topic_df.columns else None
+                topic_median_views = int(topic_df["views"].median()) if topic_count and "views" in topic_df.columns else None
+                topic_avg_retention = float(topic_df["retention"].mean()) if topic_count and "retention" in topic_df.columns and topic_df["retention"].notna().any() else None
+
+                st.markdown(f"{icon} **{topic.title()}** - {gap['recommendation']}")
+
+                stat_lines = []
+                if channel_median_views is not None:
+                    stat_lines.append(f"Mediana kanału: **{channel_median_views:,}** views")
+                if channel_avg_views is not None:
+                    stat_lines.append(f"Średnia kanału: **{channel_avg_views:,}** views")
+                if topic_count:
+                    if topic_avg_views is not None:
+                        stat_lines.append(f"Średnia dla tematu: **{topic_avg_views:,}** views")
+                    if topic_median_views is not None:
+                        stat_lines.append(f"Mediana dla tematu: **{topic_median_views:,}** views")
+                    stat_lines.append(f"Liczba filmów na temat: **{topic_count}**")
+                    if topic_avg_retention is not None:
+                        stat_lines.append(f"Średnia retencja tematu: **{topic_avg_retention:.1f}%**")
+                else:
+                    stat_lines.append("Brak filmów na ten temat na kanale.")
+
+                if stat_lines:
+                    st.caption(" | ".join(stat_lines))
+
                 if not covered:
                     with st.expander("💡 Pomysły na filmy"):
-                        suggestions = finder.suggest_ideas(gap['topic'])
+                        suggestions = finder.suggest_ideas(topic)
                         for s in suggestions:
                             st.markdown(f"- {s}")
         elif merged_df is None:
             st.warning("Załaduj dane kanału")
     
-    # --- SERIE ---
-    with tool_tabs[3]:
-        st.subheader("📺 Analiza serii")
-        st.markdown("Które serie/tematy działają najlepiej")
-
-        # Ręczne serie: wybierasz dokładnie filmy, które należą do serii
-        if merged_df is not None and ADVANCED_AVAILABLE:
-            series_mgr = get_series_manager()
-            st.markdown("### ✍️ Ręczne serie (Twoja definicja)")
-
-            # Create new series
-            cs1, cs2 = st.columns([3, 1])
-            with cs1:
-                new_series_name = st.text_input("Nazwa serii", placeholder="np. 'Polskie Tajemnice'", key="new_series_name")
-            with cs2:
-                if st.button("Utwórz", key="create_series_btn") and new_series_name:
-                    series_mgr.create_series(new_series_name.strip())
-                    st.success("✅ Utworzono serię.")
-                    st.rerun()
-
-            series_list = series_mgr.list_series()
-            if series_list:
-                # pick series
-                series_names = [s["name"] for s in series_list]
-                chosen = st.selectbox("Wybierz serię", series_names, key="series_pick")
-                series_obj = next((s for s in series_list if s["name"] == chosen), series_list[0])
-
-                # video selection
-                df_small = merged_df.copy()
-                if "title" not in df_small.columns:
-                    df_small["title"] = ""
-                video_map = {f"{row.get('title','')[:70]} ({row.get('views',0):,} views)": row.get("video_id","") for _, row in df_small.iterrows() if row.get("video_id")}
-                current_ids = series_mgr.get_series_videos(series_obj["id"])
-                current_labels = [k for k, vid in video_map.items() if vid in current_ids]
-
-                selected_labels = st.multiselect(
-                    "Filmy w serii",
-                    options=list(video_map.keys()),
-                    default=current_labels,
-                    key="series_video_select"
-                )
-
-                if st.button("💾 Zapisz serię", key="save_series_videos_btn"):
-                    vids = [video_map[l] for l in selected_labels if l in video_map]
-                    series_mgr.set_series_videos(series_obj["id"], vids)
-                    st.success("✅ Zapisano.")
-                    st.rerun()
-
-                # show stats
-                vids = series_mgr.get_series_videos(series_obj["id"])
-                if vids:
-                    sdf = merged_df[merged_df["video_id"].isin(vids)].copy()
-                    episodes = len(sdf)
-                    avg_views = int(sdf["views"].mean()) if "views" in sdf.columns and episodes else 0
-                    total_views = int(sdf["views"].sum()) if "views" in sdf.columns and episodes else 0
-                    st.info(f"Seria **{series_obj['name']}** | odcinki: **{episodes}** | avg views: **{avg_views:,}** | total: **{total_views:,}**")
-                else:
-                    st.caption("Seria nie ma jeszcze przypisanych filmów.")
-            else:
-                st.caption("Nie masz jeszcze ręcznych serii.")
-
-        st.divider()
-        
-        if st.button("📊 Analizuj serie") and merged_df is not None and ADVANCED_AVAILABLE:
-            analyzer = SeriesAnalyzer(merged_df)
-            series = analyzer.get_series_performance()
-            recs = analyzer.get_recommendations()
-            
-            st.divider()
-            
-            if recs:
-                for rec in recs:
-                    st.info(rec)
-            
-            if series:
-                st.markdown("### 📈 Performance serii")
-                
-                for s in series[:10]:
-                    trend_color = "#2d5a3d" if "Rośnie" in s['trend'] else "#5a2a2a" if "Spada" in s['trend'] else "#3a3a3a"
-                    
-                    st.markdown(f"""
-                    <div style="background: {trend_color}; padding: 1rem; border-radius: 8px; margin: 0.5rem 0;">
-                        <strong>{s['name']}</strong> ({s['episodes']} odcinków)
-                        <span style="float: right;">{s['trend']}</span>
-                        <div>Avg views: {s['avg_views']:,}</div>
-                    </div>
-                    """, unsafe_allow_html=True)
-            else:
-                st.info("Nie wykryto serii w danych")
-        elif merged_df is None:
-            st.warning("Załaduj dane kanału")
-    
     # --- KALENDARZ ---
-    with tool_tabs[4]:
+    with tool_tabs[2]:
         st.subheader("📅 Optymalny kalendarz publikacji")
         
         if st.button("📅 Generuj kalendarz") and merged_df is not None and ADVANCED_AVAILABLE:
@@ -2463,8 +2062,6 @@ with tab_tools:
             else:
                 # 1) Zbierz kontekst: hity, nisza, konkurencja, trendy
                 niche_keywords = config.get("niche_keywords", [])
-                comp_mgr = get_competitor_manager()
-                competitors = comp_mgr.list_all()
 
                 # Top hity z kanału (dla kotwic)
                 top_hits = []
@@ -2478,7 +2075,7 @@ with tab_tools:
                 trending_now = []
                 try:
                     trend_disc = get_trend_discovery()
-                    trending_now = trend_disc.find_trending_topics(niche_keywords, limit=10)
+                    trending_now = trend_disc.discover_trending(niche_keywords)[:10]
                 except Exception:
                     trending_now = []
 
@@ -2487,10 +2084,19 @@ with tab_tools:
 
                 # 2) LLM: zaproponuj tematy i kąty
                 plan_items = []
-                try:
-                    client = OpenAI(api_key=api_key)
+                use_llm = False
+                if api_key:
+                    try:
+                        from openai import OpenAI
+                        use_llm = True
+                    except Exception as e:
+                        st.warning(f"Nie udało się zainicjalizować OpenAI: {e}")
 
-                    prompt = f"""Jesteś strategiem YouTube dla kanału dark documentary po polsku.
+                if use_llm:
+                    try:
+                        client = OpenAI(api_key=api_key)
+
+                        prompt = f"""Jesteś strategiem YouTube dla kanału dark documentary po polsku.
 Zadanie: zaproponuj {n_items} tematów na kolejne tygodnie.
 Każdy temat ma być krótki i konkretny (np. "Operacja Northwoods", "Katastrofa w Smoleńsku", "Czarna Plaga 1258 Samalas").
 Dodaj też kąt (angle) i 1-2 zdania uzasadnienia (why) pod moją niszę.
@@ -2510,21 +2116,81 @@ Zwróć WYŁĄCZNIE poprawny JSON w formacie:
 Bez komentarzy i bez markdown.
 """
 
-                    resp = client.chat.completions.create(
-                        model=config.get("openai_model", "gpt-4o-mini"),
-                        messages=[
-                            {"role": "system", "content": "Zwracaj tylko JSON. Bez markdown."},
-                            {"role": "user", "content": prompt},
-                        ],
-                        temperature=0.6,
-                    )
+                        resp = client.chat.completions.create(
+                            model=config.get("openai_model", "gpt-4o-mini"),
+                            messages=[
+                                {"role": "system", "content": "Zwracaj tylko JSON. Bez markdown."},
+                                {"role": "user", "content": prompt},
+                            ],
+                            temperature=0.6,
+                        )
 
-                    raw = resp.choices[0].message.content.strip()
-                    data = json.loads(raw)
-                    plan_items = data.get("plan", [])[:n_items]
-                except Exception as e:
-                    st.warning(f"Nie udało się wygenerować planu z LLM: {e}")
+                        raw = resp.choices[0].message.content.strip()
+                        data = json.loads(raw)
+                        plan_items = data.get("plan", [])[:n_items]
+                    except Exception as e:
+                        st.warning(f"Nie udało się wygenerować planu z LLM: {e}")
+                        plan_items = []
+
+                if not plan_items:
+                    angles = [
+                        "Ukryta prawda", "Timeline zdarzeń", "Śledztwo krok po kroku",
+                        "Konsekwencje i stawka", "Najbardziej niewygodny fakt"
+                    ]
+                    candidate_topics = []
+                    seen = set()
+
+                    for item in trending_now:
+                        topic = str(item.get("topic", "")).strip()
+                        if topic and topic.lower() not in seen:
+                            seen.add(topic.lower())
+                            candidate_topics.append({
+                                "topic": topic,
+                                "why": item.get("recommendation") or f"Trendy teraz (score: {item.get('score', 0)})",
+                                "source": "trend"
+                            })
+
+                    gap_finder = ContentGapFinder(merged_df)
+                    gap_topics = [g for g in gap_finder.find_gaps() if not g.get("covered")]
+                    for g in gap_topics:
+                        topic = g.get("topic", "").strip()
+                        if topic and topic.lower() not in seen:
+                            seen.add(topic.lower())
+                            candidate_topics.append({
+                                "topic": topic,
+                                "why": "Brak filmów na kanale + temat niszowy",
+                                "source": "gap"
+                            })
+
+                    for hit in top_hits[:5]:
+                        topic = str(hit).strip()
+                        if topic and topic.lower() not in seen:
+                            seen.add(topic.lower())
+                            candidate_topics.append({
+                                "topic": topic,
+                                "why": "Podobny do historycznych hitów kanału",
+                                "source": "hit"
+                            })
+
+                    for kw in niche_keywords[:5]:
+                        topic = str(kw).strip()
+                        if topic and topic.lower() not in seen:
+                            seen.add(topic.lower())
+                            candidate_topics.append({
+                                "topic": topic,
+                                "why": "Niszowe słowo kluczowe z konfiguracji",
+                                "source": "niche"
+                            })
+
                     plan_items = []
+                    for idx, item in enumerate(candidate_topics[:n_items], start=1):
+                        plan_items.append({
+                            "week": ((idx - 1) // plan_per_week) + 1,
+                            "topic": item["topic"],
+                            "angle": angles[(idx - 1) % len(angles)],
+                            "why": item["why"],
+                            "source": item["source"]
+                        })
 
                 if not plan_items:
                     st.info("Brak planu do pokazania. Spróbuj ponownie lub ustaw inny fokus.")
@@ -2533,6 +2199,7 @@ Bez komentarzy i bez markdown.
                     eval_results = []
                     if TOPIC_ANALYZER_AVAILABLE:
                         try:
+                            from openai import OpenAI
                             client = OpenAI(api_key=api_key)
                             topic_eval = get_topic_evaluator(client, merged_df)
                             for item in plan_items:
@@ -2554,6 +2221,129 @@ Bez komentarzy i bez markdown.
                                 })
                         except Exception as e:
                             st.warning(f"Ocena tematów nie zadziałała: {e}")
+
+                    def _render_month_calendar(items: List[Dict], weeks: int, per_week: int) -> None:
+                        today = datetime.now().date()
+                        month_matrix = calendar.monthcalendar(today.year, today.month)
+                        month_name = today.strftime("%B %Y")
+                        days_header = ["Pn", "Wt", "Śr", "Cz", "Pt", "Sb", "Nd"]
+
+                        day_assignments: Dict[int, List[Dict]] = {}
+                        overflow_items: List[Dict] = []
+
+                        item_idx = 0
+                        for item in items:
+                            week_no = int(item.get("week", 1))
+                            if week_no < 1:
+                                week_no = 1
+                            if week_no > len(month_matrix):
+                                overflow_items.append(item)
+                                continue
+                            week_row = month_matrix[week_no - 1]
+                            day_indices = [idx for idx, day in enumerate(week_row) if day > 0]
+                            if not day_indices:
+                                overflow_items.append(item)
+                                continue
+                            bucket = day_indices[item_idx % len(day_indices)]
+                            day_num = week_row[bucket]
+                            day_assignments.setdefault(day_num, []).append(item)
+                            item_idx += 1
+
+                        def _cell(day_num: int) -> str:
+                            if day_num == 0:
+                                return "<td class='cal-cell empty'></td>"
+                            items_html = ""
+                            for itm in day_assignments.get(day_num, []):
+                                title = itm.get("topic", "")
+                                angle = itm.get("angle", "")
+                                items_html += f"<div class='cal-item'><strong>{title}</strong><span>{angle}</span></div>"
+                            return f"<td class='cal-cell'><div class='cal-date'>{day_num}</div>{items_html}</td>"
+
+                        rows_html = ""
+                        for week_row in month_matrix:
+                            row_cells = "".join(_cell(day) for day in week_row)
+                            rows_html += f"<tr>{row_cells}</tr>"
+
+                        calendar_html = f"""
+                        <style>
+                        .cal-wrap {{
+                            border: 1px solid #333;
+                            border-radius: 12px;
+                            overflow: hidden;
+                            background: #111;
+                        }}
+                        .cal-header {{
+                            padding: 12px 16px;
+                            font-weight: 600;
+                            font-size: 1.1rem;
+                            background: #1b1b1b;
+                            border-bottom: 1px solid #2a2a2a;
+                        }}
+                        .cal-table {{
+                            width: 100%;
+                            border-collapse: collapse;
+                        }}
+                        .cal-table th {{
+                            padding: 8px;
+                            font-weight: 600;
+                            color: #bbb;
+                            border-bottom: 1px solid #222;
+                            background: #161616;
+                            text-align: center;
+                        }}
+                        .cal-cell {{
+                            vertical-align: top;
+                            padding: 8px;
+                            min-height: 100px;
+                            border-right: 1px solid #222;
+                            border-bottom: 1px solid #222;
+                        }}
+                        .cal-cell.empty {{
+                            background: #0d0d0d;
+                        }}
+                        .cal-date {{
+                            font-size: 0.85rem;
+                            color: #888;
+                            margin-bottom: 6px;
+                        }}
+                        .cal-item {{
+                            background: #202020;
+                            border: 1px solid #2f2f2f;
+                            border-radius: 8px;
+                            padding: 6px 8px;
+                            margin-bottom: 6px;
+                            font-size: 0.8rem;
+                        }}
+                        .cal-item strong {{
+                            display: block;
+                            color: #f0f0f0;
+                        }}
+                        .cal-item span {{
+                            display: block;
+                            color: #9a9a9a;
+                            font-size: 0.75rem;
+                        }}
+                        </style>
+                        <div class='cal-wrap'>
+                          <div class='cal-header'>📅 {month_name} — Plan na {weeks} tygodni ({per_week} / tydzień)</div>
+                          <table class='cal-table'>
+                            <thead>
+                              <tr>{''.join([f'<th>{d}</th>' for d in days_header])}</tr>
+                            </thead>
+                            <tbody>
+                              {rows_html}
+                            </tbody>
+                          </table>
+                        </div>
+                        """
+                        st.markdown(calendar_html, unsafe_allow_html=True)
+                        if overflow_items:
+                            st.warning("Część tematów wykracza poza bieżący miesiąc — poniżej lista dodatkowa.")
+                            for itm in overflow_items:
+                                st.markdown(f"- {itm.get('topic', '')} (tydzień {itm.get('week', '?')})")
+
+                    st.markdown("#### Widok kalendarza (miesiąc)")
+                    _render_month_calendar(plan_items, plan_weeks, plan_per_week)
 
                     # 4) Prezentacja
                     by_week = {}
@@ -2584,6 +2374,8 @@ Bez komentarzy i bez markdown.
                                     st.markdown(f"**Kąt:** {angle}")
                                 if why:
                                     st.markdown(f"**Dlaczego:** {why}")
+                                if item.get("source"):
+                                    st.caption(f"Źródło pomysłu: {item.get('source')}")
                                 if scored:
                                     st.markdown(scored.get("recommendation", ""))
                                     st.markdown(f"**Viral:** {scored.get('viral', 0)}/100  |  **Opportunity:** {scored.get('opportunity', 0)}/100")
@@ -2628,8 +2420,8 @@ Bez komentarzy i bez markdown.
                             if ok:
                                 saved += 1
                         st.success(f"Zapisano {saved} pomysłów.")
-        # --- TREND ALERTS ---
-    with tool_tabs[5]:
+    # --- TREND ALERTS ---
+    with tool_tabs[3]:
         st.subheader("🔔 Trend Alerts")
         st.markdown("Monitoruj tematy i otrzymuj powiadomienia gdy zaczną trendować")
 
@@ -2659,24 +2451,8 @@ Bez komentarzy i bez markdown.
             with st.spinner("Szukam trendów w niszy..."):
                 try:
                     discovery = get_trend_discovery()
-                    candidates = []
-                    for seed in [s.strip() for s in seeds_text.split(",") if s.strip()][:8]:
-                        rel = discovery.discover_related_topics(seed, limit=6) or []
-                        for item in rel:
-                            term = (item.get("topic") or "").strip()
-                            if term:
-                                candidates.append({
-                                    "topic": term,
-                                    "source_seed": seed,
-                                    "relevance": item.get("relevance", 0)
-                                })
-                    # dedupe by topic, keep max relevance
-                    dedup = {}
-                    for c in candidates:
-                        t = c["topic"].lower()
-                        if t not in dedup or c.get("relevance",0) > dedup[t].get("relevance",0):
-                            dedup[t] = c
-                    top = sorted(dedup.values(), key=lambda x: x.get("relevance",0), reverse=True)[:20]
+                    seeds = [s.strip() for s in seeds_text.split(",") if s.strip()][:8]
+                    top = discovery.discover_trending(seeds) if seeds else discovery.discover_trending()
 
                     trend_map = {}
                     if ADVANCED_AVAILABLE and top:
@@ -2699,13 +2475,14 @@ Bez komentarzy i bez markdown.
 
                     rows = []
                     for item in top:
-                        t = item["topic"]
+                        t = item.get("topic", "")
                         det = trend_map.get(t, {})
                         overall = det.get("overall") or {}
                         rows.append({
                             "Temat": t,
-                            "Seed": item["source_seed"],
-                            "Relevance": item.get("relevance", 0),
+                            "Źródło": item.get("source", ""),
+                            "Score": item.get("score", 0),
+                            "Rekomendacja": item.get("recommendation", ""),
                             "Trend score": overall.get("score", ""),
                             "Trend verdict": overall.get("verdict", ""),
                             "Trend msg": overall.get("message", "")
@@ -2805,6 +2582,53 @@ Bez komentarzy i bez markdown.
                     st.metric("⏱️ Avg retention", f"{avg_ret:.1f}%")
         
             st.divider()
+
+            st.subheader("🔮 Prediction — prognoza rozwoju kanału")
+            st.caption("Heurystyczna prognoza na bazie ostatnich publikacji i średnich wyników.")
+
+            date_col = None
+            for col in ["published_at", "publishedAt", "date", "published"]:
+                if col in merged_df.columns:
+                    date_col = col
+                    break
+
+            df_pred = merged_df.copy()
+            if date_col:
+                df_pred["date"] = pd.to_datetime(df_pred[date_col], errors="coerce", utc=True)
+                df_pred = df_pred.dropna(subset=["date"]).sort_values("date")
+
+            if "views" not in df_pred.columns or df_pred.empty:
+                st.info("Brak wystarczających danych (views/published_at) do prognozy.")
+            else:
+                planned_uploads = st.slider("Planowane publikacje / miesiąc", 1, 12, 4, key="pred_uploads")
+
+                recent_df = df_pred.copy()
+                if date_col:
+                    cutoff = pd.Timestamp.now(tz="UTC") - timedelta(days=30)
+                    recent_df = recent_df[recent_df["date"] >= cutoff]
+                if recent_df.empty:
+                    recent_df = df_pred.tail(10)
+
+                avg_recent_views = recent_df["views"].mean()
+                avg_all_views = df_pred["views"].mean()
+                growth_pct = 0.0
+                if avg_all_views:
+                    growth_pct = (avg_recent_views / avg_all_views - 1.0) * 100.0
+
+                projected_month_views = int(avg_recent_views * planned_uploads)
+                projected_next_total = int(df_pred["views"].sum() + projected_month_views)
+
+                p1, p2, p3, p4 = st.columns(4)
+                with p1:
+                    st.metric("Śr. views (ostatnie publikacje)", f"{avg_recent_views:,.0f}")
+                with p2:
+                    st.metric("Trend vs średnia kanału", f"{growth_pct:+.1f}%")
+                with p3:
+                    st.metric("Prognoza views / miesiąc", f"{projected_month_views:,.0f}")
+                with p4:
+                    st.metric("Prognoza total views", f"{projected_next_total:,.0f}")
+
+                st.caption("Prognoza bazuje na średniej z ostatnich publikacji i zakładanej liczbie filmów w miesiącu.")
         
             # Charts
             chart_col1, chart_col2 = st.columns(2)
@@ -2891,7 +2715,7 @@ Bez komentarzy i bez markdown.
             else:
                 st.info("Brak danych tracking. Po publikacji filmu dodaj rzeczywiste views w zakładce Historia.")
     # --- COMPETITOR TRACKER ---
-    with tool_tabs[6]:
+    with tool_tabs[4]:
         st.subheader("👀 Competitor Tracker")
         st.caption("Dodaj kanały konkurencji i podejrzyj ich ostatnie uploady (z YouTube API lub fallbackiem).")
 
@@ -2939,17 +2763,33 @@ Bez komentarzy i bez markdown.
             st.markdown("### 🛰️ Ostatnie uploady")
             days = st.slider("Z jakiego okresu", 3, 60, 14, key="comp_days")
             max_per = st.slider("Max filmów na kanał", 1, 20, 8, key="comp_max_per")
-            fetch_btn = st.button("Pobierz ostatnie filmy", key="comp_fetch_btn")
+            fetch_btn = st.button("Pobierz ostatnie filmy", key="comp_fetch_btn", disabled=not competitors)
 
             if fetch_btn:
+                if not competitors:
+                    st.warning("Dodaj co najmniej jednego konkurenta, aby pobrać uploady.")
+                    st.stop()
+
                 yt_sync = get_youtube_sync()
                 yt_client = None
+                source_hint = "fallback"
                 if GOOGLE_API_AVAILABLE and yt_sync.has_credentials():
                     ok, msg = yt_sync.authenticate()
                     if ok:
                         yt_client = yt_sync.youtube
+                        source_hint = "oauth"
                     else:
                         st.warning(msg)
+
+                if not yt_client and GOOGLE_API_AVAILABLE:
+                    api_key = config.get("youtube_api_key", "")
+                    if api_key:
+                        yt_sync.set_api_key(api_key)
+                        if yt_sync.ensure_public_client():
+                            yt_client = yt_sync.youtube
+                            source_hint = "api_key"
+                    else:
+                        st.info("Ustaw YouTube API Key w konfiguracji, aby użyć trybu publicznego bez OAuth.")
 
                 tracker = get_competitor_tracker(yt_client)
                 uploads = tracker.fetch_recent_uploads(competitors, days=days, max_per_channel=max_per)
@@ -2963,6 +2803,7 @@ Bez komentarzy i bez markdown.
                         st.json(errs)
 
                 if vids:
+                    st.caption(f"Źródło danych: {source_hint}")
                     # Sort by publishedAt if present
                     def _ts(x):
                         return x.get("publishedAt") or x.get("publishedTime") or ""
@@ -3373,46 +3214,6 @@ with tab_data:
             st.rerun()
     else:
         st.info("Brak danych. Użyj YouTube Sync lub wgraj CSV.")
-
-# =============================================================================
-# TAB: EXPLAINABILITY
-# =============================================================================
-
-with tab_explain:
-    st.header("🧠 Explainability")
-    st.caption("Dlaczego wynik jest taki jaki jest (temat lub tytuł).")
-
-    topic_res = st.session_state.get("topic_result_main")
-    legacy_res = st.session_state.get("last_result")
-
-    if topic_res:
-        st.subheader("Topic Workspace")
-        st.metric("Ocena", f"{topic_res.get('overall_score', topic_res.get('overall_score_base', 0))}/100")
-        st.json({
-            "trend_bonus": topic_res.get("trend_bonus", 0),
-            "similar_bonus": topic_res.get("similar_bonus", 0),
-            "base_overall": topic_res.get("overall_score_base", 0),
-            "competition": topic_res.get("competition", {}).get("opportunity_score", 0),
-            "viral_score": topic_res.get("viral_score", {}).get("viral_score", 0)
-        })
-        if topic_res.get("similar_hits"):
-            st.markdown("**Najbardziej podobne hity**")
-            for h in topic_res["similar_hits"][:5]:
-                st.markdown(f"- {h.get('title','')} | {h.get('views',0):,} views | {h.get('label','')}")
-    if legacy_res:
-        st.subheader("Oceń tytuł (legacy)")
-        st.metric("Score", f"{legacy_res.get('final_score_with_bonus', legacy_res.get('final_score', 0))}/100")
-        st.json({
-            "data_score": legacy_res.get("data_score", 0),
-            "llm_score": legacy_res.get("llm_score", 0),
-            "risk_penalty": legacy_res.get("risk_penalty", 0),
-            "advanced_bonus": legacy_res.get("advanced_bonus", 0)
-        })
-        if legacy_res.get("risk_flags"):
-            st.markdown("**Ryzyka:** " + ", ".join(legacy_res.get("risk_flags", [])))
-
-    if not topic_res and not legacy_res:
-        st.info("Brak wyników do wyjaśnienia. Najpierw uruchom ocenę tematu lub tytułu.")
 
 # =============================================================================
 # TAB: DIAGNOSTYKA

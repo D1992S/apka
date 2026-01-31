@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+app_data/cache_store.json
+app_data/config.json
+app_data/evaluation_history.json
+app_data/idea_vault.json
+app_data/trend_alerts.json
+app_data/tracking_accuracy.json
+app_data/series_map.json
+app_data/competitors.json
+channel_data/
