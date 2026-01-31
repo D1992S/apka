@@ -1,0 +1,35 @@
+# YT Idea Evaluator Pro v3
+# Requirements
+
+# === CORE ===
+streamlit>=1.28.0
+pandas>=2.0.0
+numpy>=1.24.0
+openai>=1.0.0
+scikit-learn>=1.3.0
+
+# === VISUALIZATION ===
+plotly>=5.18.0
+
+# === OPTIONAL: Google Trends ===
+pytrends>=4.9.0
+
+# === OPTIONAL: YouTube Search ===
+youtube-search-python>=1.6.6
+
+# === OPTIONAL: YouTube API Sync ===
+# Uncomment if you want to use YouTube API sync:
+# google-api-python-client>=2.100.0
+# google-auth-oauthlib>=1.1.0
+# google-auth-httplib2>=0.1.1
+
+# === OPTIONAL: Transcripts ===
+# youtube-transcript-api>=0.6.1
+
+# === FIX: httpx version for youtube-search-python ===
+# If you get 'proxies' error, run:
+# pip install httpx==0.24.1
+google-api-python-client>=2.120.0
+google-auth>=2.25.0
+google-auth-oauthlib>=1.2.0
+youtube-transcript-api>=0.6.2

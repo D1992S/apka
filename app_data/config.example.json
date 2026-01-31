@@ -1,0 +1,17 @@
+{
+  "openai_api_key": "",
+  "openai_model": "gpt-4o-mini",
+  "niche_keywords": [
+    "tajemnice",
+    "katastrofy",
+    "sekty",
+    "ufo",
+    "teorie spiskowe"
+  ],
+  "youtube_api_key": "",
+  "channel_id": "",
+  "language": "pl",
+  "default_upload_day": "Saturday",
+  "default_upload_time": "18:00",
+  "shorts_enabled": false
+}
