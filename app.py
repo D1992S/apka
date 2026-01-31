@@ -2594,7 +2594,7 @@ Bez komentarzy i bez markdown.
 
             df_pred = merged_df.copy()
             if date_col:
-                df_pred["date"] = pd.to_datetime(df_pred[date_col], errors="coerce")
+                df_pred["date"] = pd.to_datetime(df_pred[date_col], errors="coerce", utc=True)
                 df_pred = df_pred.dropna(subset=["date"]).sort_values("date")
 
             if "views" not in df_pred.columns or df_pred.empty:
@@ -2604,7 +2604,7 @@ Bez komentarzy i bez markdown.
 
                 recent_df = df_pred.copy()
                 if date_col:
-                    cutoff = datetime.now() - timedelta(days=30)
+                    cutoff = pd.Timestamp.now(tz="UTC") - timedelta(days=30)
                     recent_df = recent_df[recent_df["date"] >= cutoff]
                 if recent_df.empty:
                     recent_df = df_pred.tail(10)
@@ -2639,7 +2639,7 @@ Bez komentarzy i bez markdown.
                 if "published_at" in merged_df.columns or "publishedAt" in merged_df.columns:
                     date_col = "published_at" if "published_at" in merged_df.columns else "publishedAt"
                     df_chart = merged_df.copy()
-                    df_chart["date"] = pd.to_datetime(df_chart[date_col], errors="coerce")
+                    df_chart["date"] = pd.to_datetime(df_chart[date_col], errors="coerce", utc=True)
                     df_chart = df_chart.dropna(subset=["date"]).sort_values("date")
                 
                     if len(df_chart) > 0 and "views" in df_chart.columns:
