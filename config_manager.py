@@ -45,6 +45,7 @@ class AppConfig:
         "openai_api_key": "",
         "niche_keywords": ["tajemnice", "zagadki", "spiski", "ufo", "katastrofy"],
         "youtube_credentials_path": "",
+        "youtube_api_key": "",
         "auto_sync_on_start": False,
         "dark_mode": True,
         "default_judges": 2,
@@ -92,6 +93,14 @@ class AppConfig:
     def set_api_key(self, key: str):
         """Zapisuje OpenAI API key"""
         self.set("openai_api_key", key)
+
+    def get_youtube_api_key(self) -> str:
+        """Pobiera YouTube API key"""
+        return self.config.get("youtube_api_key", "")
+
+    def set_youtube_api_key(self, key: str):
+        """Zapisuje YouTube API key"""
+        self.set("youtube_api_key", key)
 
 
 # =============================================================================
@@ -147,6 +156,8 @@ class EvaluationHistory:
             "target_emotion": evaluation.get("target_emotion", ""),
             "predicted_metrics": evaluation.get("predicted_metrics", {}),
             "advanced_insights": evaluation.get("advanced_insights", {}),
+            "tags": evaluation.get("tags", []),
+            "status": evaluation.get("status", ""),
             # Tracking - do uzupełnienia po publikacji
             "published": False,
             "actual_views": None,
@@ -249,26 +260,27 @@ class EvaluationHistory:
         
         return output.getvalue()
 
+    def export_to_json(self) -> str:
+        """Eksportuje historię do JSON"""
+        return json.dumps(self.history, indent=2, ensure_ascii=False, default=str)
+
+    def delete(self, entry_id: str) -> bool:
+        """Usuwa pojedynczy wpis z historii"""
+        before = len(self.history)
+        self.history = [h for h in self.history if h.get("id") != entry_id]
+        if len(self.history) != before:
+            self.save()
+            return True
+        return False
+
+    def clear(self):
+        """Czyści całą historię"""
+        self.history = []
+        self.save()
 
 # =============================================================================
 # IDEA VAULT
 # =============================================================================
-
-
-
-def delete(self, entry_id: str) -> bool:
-    """Usuwa pojedynczy wpis z historii"""
-    before = len(self.history)
-    self.history = [h for h in self.history if h.get("id") != entry_id]
-    if len(self.history) != before:
-        self.save()
-        return True
-    return False
-
-def clear(self):
-    """Czyści całą historię"""
-    self.history = []
-    self.save()
 
 
 class IdeaVault:
@@ -296,7 +308,8 @@ class IdeaVault:
     
     def add(self, title: str, promise: str = "", score: int = 0,
             reason: str = "", tags: List[str] = None, remind_when: str = None,
-            topic: str = "", payload: Dict[str, Any] = None, **kwargs):
+            topic: str = "", payload: Dict[str, Any] = None, status: str = "new",
+            **kwargs):
         """Dodaje pomysł do vault"""
         idea = {
             "id": hashlib.md5(f"{title}{datetime.now().isoformat()}".encode()).hexdigest()[:8],
@@ -308,7 +321,7 @@ class IdeaVault:
             "reason": reason,  # Dlaczego zapisany na później
             "tags": tags or [],
             "remind_when": remind_when,  # "trending", "30_days", "season_winter" etc.
-            "status": "waiting",  # waiting, used, discarded
+            "status": status or "new",  # new, shortlisted, scripted, used, discarded
             "notes": "",
             "payload": payload or {},
             "extra": kwargs or {},
@@ -320,6 +333,8 @@ class IdeaVault:
     def get_all(self, status: str = None) -> List[Dict]:
         """Zwraca pomysły (opcjonalnie filtrowane)"""
         if status:
+            if status == "new":
+                return [i for i in self.ideas if i.get("status") in ["new", "waiting"]]
             return [i for i in self.ideas if i.get("status") == status]
         return self.ideas
     
@@ -329,6 +344,20 @@ class IdeaVault:
             if idea.get("id") == idea_id:
                 idea["status"] = status
                 if notes:
+                    idea["notes"] = notes
+                self.save()
+                return True
+        return False
+
+    def update_metadata(self, idea_id: str, tags: List[str] = None, status: str = None, notes: str = None):
+        """Aktualizuje tagi/status/notes pomysłu"""
+        for idea in self.ideas:
+            if idea.get("id") == idea_id:
+                if tags is not None:
+                    idea["tags"] = tags
+                if status:
+                    idea["status"] = status
+                if notes is not None:
                     idea["notes"] = notes
                 self.save()
                 return True
@@ -367,7 +396,7 @@ class IdeaVault:
         trending_topics = trending_topics or []
 
         for idea in self.ideas:
-            if idea.get("status") != "waiting":
+            if idea.get("status") not in ["waiting", "new"]:
                 continue
 
             remind = idea.get("remind_when", "")

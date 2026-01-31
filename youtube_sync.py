@@ -56,6 +56,8 @@ class YouTubeSync:
         self.analytics = None
         self.credentials = None
         self._channel_id = None
+        self.api_key = None
+        self.channel_id = None
         
     def is_available(self) -> bool:
         """Sprawdza czy Google API jest dostępne"""
@@ -68,6 +70,28 @@ class YouTubeSync:
     def is_authenticated(self) -> bool:
         """Sprawdza czy jesteśmy zalogowani"""
         return self.credentials is not None and self.credentials.valid
+
+    def set_api_key(self, api_key: str):
+        """Ustawia API key dla publicznych zapytań"""
+        self.api_key = api_key or None
+
+    def set_channel_id(self, channel_id: str):
+        """Ustawia channel_id dla zapytań publicznych"""
+        self.channel_id = (channel_id or "").strip() or None
+
+    def ensure_public_client(self) -> bool:
+        """Buduje klienta YouTube Data API z API key (bez OAuth)."""
+        if not GOOGLE_API_AVAILABLE:
+            return False
+        if self.youtube is not None:
+            return True
+        if not self.api_key:
+            return False
+        try:
+            self.youtube = build('youtube', 'v3', developerKey=self.api_key)
+            return True
+        except Exception:
+            return False
     
     def setup_instructions(self) -> str:
         """Instrukcje konfiguracji"""
@@ -155,6 +179,8 @@ class YouTubeSync:
     
     def get_channel_id(self) -> Optional[str]:
         """Pobiera ID kanału zalogowanego użytkownika"""
+        if self.channel_id:
+            return self.channel_id
         if not self.youtube:
             return None
         
