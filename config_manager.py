@@ -44,6 +44,8 @@ class AppConfig:
     DEFAULT_CONFIG = {
         "openai_api_key": "",
         "google_ai_api_key": "",
+        "openai_enabled": True,
+        "google_enabled": True,
         "niche_keywords": ["tajemnice", "zagadki", "spiski", "ufo", "katastrofy"],
         "youtube_credentials_path": "",
         "youtube_api_key": "",
@@ -71,8 +73,8 @@ class AppConfig:
                     saved = json.load(f)
                     # Merge z defaults (dla nowych kluczy)
                     return {**self.DEFAULT_CONFIG, **saved}
-            except:
-                pass
+            except (IOError, json.JSONDecodeError) as e:
+                print(f"⚠ Nie udało się wczytać config.json: {e}. Używam domyślnych ustawień.")
         return self.DEFAULT_CONFIG.copy()
     
     def save(self):
@@ -132,8 +134,8 @@ class EvaluationHistory:
             try:
                 with open(HISTORY_FILE, "r", encoding="utf-8") as f:
                     return json.load(f)
-            except:
-                pass
+            except (IOError, json.JSONDecodeError) as e:
+                print(f"⚠ Nie udało się wczytać historii: {e}")
         return []
     
     def save(self):
@@ -208,8 +210,9 @@ class EvaluationHistory:
                 predicted = entry.get("predicted_metrics", {})
                 pred_views = predicted.get("views_estimate", 0)
                 if pred_views and actual_views:
-                    # Accuracy jako % różnicy
-                    diff = abs(pred_views - actual_views) / max(pred_views, actual_views)
+                    # Accuracy jako % różnicy (zabezpieczenie przed dzieleniem przez 0)
+                    max_val = max(pred_views, actual_views, 1)
+                    diff = abs(pred_views - actual_views) / max_val
                     entry["prediction_accuracy"] = round((1 - diff) * 100, 1)
                 
                 self.save()
@@ -308,8 +311,8 @@ class IdeaVault:
             try:
                 with open(IDEA_VAULT_FILE, "r", encoding="utf-8") as f:
                     return json.load(f)
-            except:
-                pass
+            except (IOError, json.JSONDecodeError) as e:
+                print(f"⚠ Nie udało się wczytać Idea Vault: {e}")
         return []
     
     def save(self):
@@ -454,8 +457,8 @@ class SeriesManager:
             try:
                 with open(SERIES_MAP_FILE, "r", encoding="utf-8") as f:
                     return json.load(f)
-            except:
-                pass
+            except (IOError, json.JSONDecodeError) as e:
+                print(f"⚠ Nie udało się wczytać mapy serii: {e}")
         return {"series": {}, "video_to_series": {}}
 
     def save(self):
@@ -521,8 +524,8 @@ class CompetitorManager:
             try:
                 with open(COMPETITORS_FILE, "r", encoding="utf-8") as f:
                     return json.load(f)
-            except:
-                pass
+            except (IOError, json.JSONDecodeError) as e:
+                print(f"⚠ Nie udało się wczytać listy konkurencji: {e}")
         return []
 
     def save(self):
@@ -570,8 +573,8 @@ class TrendAlerts:
             try:
                 with open(TREND_ALERTS_FILE, "r", encoding="utf-8") as f:
                     return json.load(f)
-            except:
-                pass
+            except (IOError, json.JSONDecodeError) as e:
+                print(f"⚠ Nie udało się wczytać alertów trendów: {e}")
         return []
     
     def save(self):

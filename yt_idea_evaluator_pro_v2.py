@@ -257,15 +257,32 @@ class YTIdeaEvaluatorV2:
         
         self._initialized = False
         
-    def initialize(self, api_key: str = None):
-        """Inicjalizacja klienta OpenAI"""
+    def initialize(self, api_key: str = None) -> bool:
+        """
+        Inicjalizacja klienta OpenAI.
+        Zwraca True jeśli sukces, False jeśli brak klucza.
+        """
         api_key = api_key or os.getenv("OPENAI_API_KEY")
         if not api_key:
-            raise RuntimeError("Brak OPENAI_API_KEY!")
-        
-        self.client = OpenAI(api_key=api_key)
-        os.makedirs(self.config.CACHE_DIR, exist_ok=True)
-        print(f"✓ Initialized v2 | Embedding: {self.config.EMB_MODEL} | Judges: {self.config.JUDGE_MODELS}")
+            self._initialized = False
+            self._init_error = "Brak klucza OpenAI API. Dodaj klucz w ustawieniach."
+            return False
+
+        try:
+            self.client = OpenAI(api_key=api_key)
+            os.makedirs(self.config.CACHE_DIR, exist_ok=True)
+            self._initialized = True
+            self._init_error = None
+            print(f"✓ Initialized v2 | Embedding: {self.config.EMB_MODEL} | Judges: {self.config.JUDGE_MODELS}")
+            return True
+        except Exception as e:
+            self._initialized = False
+            self._init_error = f"Błąd inicjalizacji OpenAI: {str(e)}"
+            return False
+
+    def get_init_error(self) -> str:
+        """Zwraca komunikat błędu inicjalizacji (lub None jeśli OK)"""
+        return getattr(self, '_init_error', None)
         
     # -------------------------------------------------------------------------
     # ŁADOWANIE DANYCH
@@ -667,17 +684,23 @@ Bądź BRUTALNIE szczery."""
     def _judge_with_ensemble(self, title: str, promise: str, context: str, n_judges: int = 2) -> Tuple:
         """Ocena z ensemble kilku wywołań"""
         results = []
-        
-        for _ in range(n_judges):
-            for model in self.config.JUDGE_MODELS:
+        models = self.config.JUDGE_MODELS
+
+        # Wykonaj n_judges ocen, z fallbackiem na kolejne modele w razie błędu
+        for i in range(n_judges):
+            # Rotuj modele dla różnorodności
+            model_idx = i % len(models)
+            models_to_try = models[model_idx:] + models[:model_idx]
+
+            for model in models_to_try:
                 try:
                     r = self._judge_once(title, promise, context, model)
                     results.append(r)
-                    break
+                    break  # Sukces - przejdź do następnej oceny
                 except Exception as e:
                     print(f"⚠ Judge error ({model}): {e}")
-                    continue
-        
+                    continue  # Spróbuj następnego modelu
+
         if not results:
             raise RuntimeError("Nie udało się uzyskać oceny od żadnego modelu")
         

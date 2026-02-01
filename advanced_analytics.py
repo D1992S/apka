@@ -436,8 +436,8 @@ class TrendsAnalyzer:
         if PYTRENDS_AVAILABLE:
             try:
                 self.pytrends = TrendReq(hl='pl-PL', tz=60)
-            except:
-                pass
+            except Exception as e:
+                print(f"⚠ Nie udało się zainicjalizować pytrends: {e}")
     
     def check_trend(self, keywords: List[str], timeframe: str = "today 3-m") -> Dict:
         """
@@ -747,7 +747,7 @@ class TimingPredictor:
                         last_date = last_date.tz_localize(None)
                     try:
                         days_since = (datetime.now() - last_date).days
-                    except:
+                    except (TypeError, ValueError):
                         days_since = 0
                     
                     gaps[topic] = {
@@ -984,12 +984,12 @@ class CompetitionScanner:
                 try:
                     num = float(views_str.replace(suffix, ""))
                     return int(num * mult)
-                except:
-                    pass
-        
+                except ValueError:
+                    continue
+
         try:
             return int(float(views_str))
-        except:
+        except ValueError:
             return 0
     
     def _parse_days_ago(self, published: str) -> int:

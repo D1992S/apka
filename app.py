@@ -138,7 +138,7 @@ st.markdown("""
 }
 .verdict-border {
     background: linear-gradient(135deg, #4a4000 0%, #5a5010 100%);
-    color: #FFD700;
+    color: #FFFACD; /* Jaśniejszy żółty dla lepszego kontrastu */
 }
 .verdict-fail {
     background: linear-gradient(135deg, #4a1a1a 0%, #5a2a2a 100%);
@@ -577,11 +577,21 @@ def _build_prompt_from_messages(messages: List[Dict[str, str]]) -> str:
     return "\n\n".join(prompt_parts).strip()
 
 def get_llm_settings() -> Tuple[str, str, str]:
+    """
+    Zwraca (provider, api_key, model) dla aktualnie wybranego dostawcy LLM.
+    Uwzględnia stan włączenia/wyłączenia danego providera.
+    """
     provider = config.get("llm_provider", "openai")
     if provider == "google":
+        if not config.get("google_enabled", True):
+            # Google wyłączony, zwróć pusty klucz
+            return provider, "", config.get("google_model", "gemini-1.5-pro-latest")
         api_key = config.get_google_api_key()
         model = config.get("google_model", "gemini-1.5-pro-latest")
     else:
+        if not config.get("openai_enabled", True):
+            # OpenAI wyłączony, zwróć pusty klucz
+            return provider, "", config.get("openai_model", "gpt-4o-mini")
         api_key = config.get_api_key()
         model = config.get("openai_model", "gpt-4o-mini")
     return provider, api_key, model
@@ -595,6 +605,71 @@ def get_llm_client(provider: str, api_key: str, model: str):
         return GoogleAIStudioClient(api_key, model=model)
     from openai import OpenAI
     return OpenAI(api_key=api_key)
+
+
+def test_openai_connection(api_key: str, model: str = "gpt-4o-mini") -> Tuple[bool, str]:
+    """
+    Testuje połączenie z OpenAI API.
+    Zwraca (success, message).
+    """
+    if not api_key:
+        return False, "Brak klucza API"
+    try:
+        from openai import OpenAI
+        client = OpenAI(api_key=api_key)
+        # Prosty test - lista modeli lub krótki request
+        response = client.chat.completions.create(
+            model=model,
+            messages=[{"role": "user", "content": "Test connection. Reply with: OK"}],
+            max_tokens=5,
+            temperature=0
+        )
+        if response.choices and response.choices[0].message.content:
+            return True, "Połączono z OpenAI"
+        return False, "Brak odpowiedzi z API"
+    except Exception as e:
+        error_msg = str(e)
+        if "Incorrect API key" in error_msg or "invalid_api_key" in error_msg:
+            return False, "Nieprawidłowy klucz API"
+        elif "Rate limit" in error_msg:
+            return False, "Przekroczono limit zapytań"
+        elif "insufficient_quota" in error_msg:
+            return False, "Brak środków na koncie"
+        else:
+            return False, f"Błąd: {error_msg[:50]}"
+
+
+def test_google_connection(api_key: str, model: str = "gemini-1.5-pro-latest") -> Tuple[bool, str]:
+    """
+    Testuje połączenie z Google AI Studio (Gemini) API.
+    Zwraca (success, message).
+    """
+    if not api_key:
+        return False, "Brak klucza API"
+    if not GOOGLE_GENAI_AVAILABLE:
+        return False, "Brak biblioteki google-generativeai"
+    try:
+        genai.configure(api_key=api_key)
+        llm = genai.GenerativeModel(model)
+        response = llm.generate_content(
+            "Test connection. Reply with: OK",
+            generation_config=genai.types.GenerationConfig(
+                max_output_tokens=5,
+                temperature=0
+            )
+        )
+        if response.text:
+            return True, "Połączono z Google AI"
+        return False, "Brak odpowiedzi z API"
+    except Exception as e:
+        error_msg = str(e)
+        if "API_KEY_INVALID" in error_msg or "INVALID_ARGUMENT" in error_msg:
+            return False, "Nieprawidłowy klucz API"
+        elif "RESOURCE_EXHAUSTED" in error_msg:
+            return False, "Przekroczono limit zapytań"
+        else:
+            return False, f"Błąd: {error_msg[:50]}"
+
 
 def build_topic_job(topic: str, api_key: str, provider: str, model: str, **kwargs) -> Dict:
     job = {
@@ -659,14 +734,20 @@ def record_llm_call(kind: str, cached: bool = False) -> None:
     stats["by_kind"][kind] = stats["by_kind"].get(kind, 0) + 1
 
 @st.cache_resource
-def get_evaluator(api_key: str, data_path: str) -> YTIdeaEvaluatorV2:
-    """Cache'owany evaluator"""
+def get_evaluator(api_key: str, data_path: str):
+    """Cache'owany evaluator. Zwraca (evaluator, error_msg) lub (None, error_msg)."""
     evaluator = YTIdeaEvaluatorV2()
-    evaluator.initialize(api_key)
-    evaluator.load_data(data_path)
-    evaluator.build_embeddings()
-    evaluator.train_models()
-    return evaluator
+
+    if not evaluator.initialize(api_key):
+        return None, evaluator.get_init_error() or "Nie udało się zainicjalizować evaluatora"
+
+    try:
+        evaluator.load_data(data_path)
+        evaluator.build_embeddings()
+        evaluator.train_models()
+        return evaluator, None
+    except Exception as e:
+        return None, f"Błąd ładowania danych: {str(e)}"
 
 @st.cache_resource
 def get_advanced_analytics(data_path: str, provider: str, model: str, _api_key: str = None):
@@ -839,8 +920,8 @@ def render_variants_with_scores(result: Dict, evaluator=None, analytics=None):
                 try:
                     s = analytics.ab_tester._calculate_ctr_score(var)
                     score = f" `{s:.0f}`"
-                except:
-                    pass
+                except (TypeError, ValueError, AttributeError):
+                    pass  # Score niedostępny
             st.markdown(f"{i}. {var}{score}")
     
     with col2:
@@ -938,28 +1019,44 @@ def render_copy_report(result: Dict):
 with st.sidebar:
     st.title("🎬 YT Evaluator Pro")
     st.caption("v3.0 - Kompletna edycja")
-    
+
     st.divider()
-    
+
     # === API KEY ===
     st.subheader("🔑 LLM API")
 
     current_provider = config.get("llm_provider", "openai")
     provider_choice = st.radio(
-        "Dostawca",
+        "Aktywny dostawca",
         list(LLM_PROVIDER_LABELS.keys()),
         format_func=lambda key: LLM_PROVIDER_LABELS[key],
         index=list(LLM_PROVIDER_LABELS.keys()).index(current_provider),
+        help="Wybierz którego dostawcy LLM chcesz używać"
     )
     if provider_choice != current_provider:
         config.set("llm_provider", provider_choice)
         st.rerun()
 
-    if provider_choice == "openai":
-        saved_key = config.get_api_key()
-        api_key = st.text_input(
+    # --- OpenAI Section ---
+    st.markdown("---")
+    openai_col1, openai_col2 = st.columns([3, 1])
+    with openai_col1:
+        st.markdown("**OpenAI**")
+    with openai_col2:
+        openai_enabled = st.toggle(
+            "ON",
+            value=config.get("openai_enabled", True),
+            key="openai_toggle",
+            help="Włącz/wyłącz OpenAI API"
+        )
+        if openai_enabled != config.get("openai_enabled", True):
+            config.set("openai_enabled", openai_enabled)
+
+    if openai_enabled:
+        saved_openai_key = config.get_api_key()
+        openai_api_key = st.text_input(
             "OpenAI API Key",
-            value=saved_key,
+            value=saved_openai_key,
             type="password",
             help="Twój klucz OpenAI API",
             key="openai_api_key_input",
@@ -967,41 +1064,117 @@ with st.sidebar:
         openai_model = st.text_input(
             "Model OpenAI",
             value=config.get("openai_model", "gpt-4o-mini"),
+            key="openai_model_input"
         )
         if openai_model != config.get("openai_model", "gpt-4o-mini"):
             config.set("openai_model", openai_model)
-        if api_key != saved_key:
-            if st.button("💾 Zapisz klucz OpenAI"):
-                config.set_api_key(api_key)
-                st.success("✅ Zapisano!")
-                st.rerun()
-    else:
-        saved_key = config.get_google_api_key()
-        api_key = st.text_input(
-            "Google AI Studio API Key",
-            value=saved_key,
-            type="password",
-            help="Twój klucz Google AI Studio (Gemini)",
-            key="google_ai_key_input",
-        )
-        google_model = st.text_input(
-            "Model Gemini",
-            value=config.get("google_model", "gemini-1.5-pro-latest"),
-        )
-        if google_model != config.get("google_model", "gemini-1.5-pro-latest"):
-            config.set("google_model", google_model)
-        if api_key != saved_key:
-            if st.button("💾 Zapisz klucz Google"):
-                config.set_google_api_key(api_key)
+        if openai_api_key != saved_openai_key:
+            if st.button("💾 Zapisz klucz OpenAI", key="save_openai"):
+                config.set_api_key(openai_api_key)
                 st.success("✅ Zapisano!")
                 st.rerun()
 
-    if api_key:
-        st.success("✅ API Key ustawiony")
+        # Status połączenia OpenAI
+        openai_status_key = "openai_connection_status"
+        if openai_status_key not in st.session_state:
+            st.session_state[openai_status_key] = {"tested": False, "success": False, "message": ""}
+
+        col_status, col_test = st.columns([2, 1])
+        with col_test:
+            if st.button("🔌 Test", key="test_openai", use_container_width=True):
+                with st.spinner("Testuję..."):
+                    success, msg = test_openai_connection(openai_api_key, openai_model)
+                    st.session_state[openai_status_key] = {"tested": True, "success": success, "message": msg}
+        with col_status:
+            status = st.session_state[openai_status_key]
+            if status["tested"]:
+                if status["success"]:
+                    st.markdown(f"🟢 **{status['message']}**")
+                else:
+                    st.markdown(f"🔴 **{status['message']}**")
+            elif openai_api_key:
+                st.markdown("⚪ *Kliknij Test*")
+            else:
+                st.markdown("⚪ *Brak klucza*")
     else:
-        st.warning("⚠️ Brak API Key")
-    if provider_choice == "google" and not GOOGLE_GENAI_AVAILABLE:
-        st.warning("⚠️ Brak biblioteki google-generativeai. Dodaj ją do środowiska.")
+        st.caption("OpenAI wyłączony")
+
+    # --- Google AI Studio Section ---
+    st.markdown("---")
+    google_col1, google_col2 = st.columns([3, 1])
+    with google_col1:
+        st.markdown("**Google AI Studio**")
+    with google_col2:
+        google_enabled = st.toggle(
+            "ON",
+            value=config.get("google_enabled", True),
+            key="google_toggle",
+            help="Włącz/wyłącz Google AI Studio (Gemini)"
+        )
+        if google_enabled != config.get("google_enabled", True):
+            config.set("google_enabled", google_enabled)
+
+    if google_enabled:
+        if not GOOGLE_GENAI_AVAILABLE:
+            st.warning("⚠️ Brak biblioteki google-generativeai")
+        else:
+            saved_google_key = config.get_google_api_key()
+            google_api_key = st.text_input(
+                "Google AI Studio API Key",
+                value=saved_google_key,
+                type="password",
+                help="Twój klucz Google AI Studio (Gemini)",
+                key="google_ai_key_input",
+            )
+            google_model = st.text_input(
+                "Model Gemini",
+                value=config.get("google_model", "gemini-1.5-pro-latest"),
+                key="google_model_input"
+            )
+            if google_model != config.get("google_model", "gemini-1.5-pro-latest"):
+                config.set("google_model", google_model)
+            if google_api_key != saved_google_key:
+                if st.button("💾 Zapisz klucz Google", key="save_google"):
+                    config.set_google_api_key(google_api_key)
+                    st.success("✅ Zapisano!")
+                    st.rerun()
+
+            # Status połączenia Google
+            google_status_key = "google_connection_status"
+            if google_status_key not in st.session_state:
+                st.session_state[google_status_key] = {"tested": False, "success": False, "message": ""}
+
+            col_status_g, col_test_g = st.columns([2, 1])
+            with col_test_g:
+                if st.button("🔌 Test", key="test_google", use_container_width=True):
+                    with st.spinner("Testuję..."):
+                        success, msg = test_google_connection(google_api_key, google_model)
+                        st.session_state[google_status_key] = {"tested": True, "success": success, "message": msg}
+            with col_status_g:
+                status = st.session_state[google_status_key]
+                if status["tested"]:
+                    if status["success"]:
+                        st.markdown(f"🟢 **{status['message']}**")
+                    else:
+                        st.markdown(f"🔴 **{status['message']}**")
+                elif google_api_key:
+                    st.markdown("⚪ *Kliknij Test*")
+                else:
+                    st.markdown("⚪ *Brak klucza*")
+    else:
+        st.caption("Google AI Studio wyłączony")
+
+    # Podsumowanie aktywnego providera
+    st.markdown("---")
+    if provider_choice == "openai":
+        api_key = config.get_api_key() if openai_enabled else ""
+    else:
+        api_key = config.get_google_api_key() if google_enabled else ""
+
+    if api_key:
+        st.success(f"✅ Aktywny: {LLM_PROVIDER_LABELS[provider_choice]}")
+    else:
+        st.warning(f"⚠️ Brak klucza dla: {LLM_PROVIDER_LABELS[provider_choice]}")
     
     st.divider()
 

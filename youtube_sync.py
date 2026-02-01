@@ -69,7 +69,7 @@ class YouTubeSync:
     
     def is_authenticated(self) -> bool:
         """Sprawdza czy jesteśmy zalogowani"""
-        return self.credentials is not None and self.credentials.valid
+        return self.credentials is not None and getattr(self.credentials, 'valid', False)
 
     def set_api_key(self, api_key: str):
         """Ustawia API key dla publicznych zapytań"""
@@ -142,8 +142,8 @@ class YouTubeSync:
             try:
                 with open(TOKEN_FILE, 'rb') as token:
                     creds = pickle.load(token)
-            except:
-                pass
+            except (IOError, pickle.PickleError) as e:
+                print(f"⚠ Nie udało się wczytać tokenu YouTube: {e}")
         
         # Odśwież lub uzyskaj nowy token
         if not creds or not creds.valid:
