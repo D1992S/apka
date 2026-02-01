@@ -22,7 +22,8 @@ import hashlib
 import calendar
 from pathlib import Path
 from datetime import datetime, timedelta
-from typing import Optional, Dict, List
+from typing import Optional, Dict, List, Tuple
+from types import SimpleNamespace
 import plotly.graph_objects as go
 import plotly.express as px
 
@@ -49,6 +50,17 @@ try:
 except ImportError as e:
     TOPIC_ANALYZER_AVAILABLE = False
     print(f"Topic analyzer not available: {e}")
+
+try:
+    import google.generativeai as genai
+    GOOGLE_GENAI_AVAILABLE = True
+except ImportError:
+    GOOGLE_GENAI_AVAILABLE = False
+
+LLM_PROVIDER_LABELS = {
+    "openai": "OpenAI",
+    "google": "Google AI Studio (Gemini)",
+}
 
 
 
@@ -299,6 +311,48 @@ Sprawdza Google Trends:
 - 📉 -5: Trend spadkowy
 - 💀 -10: Temat martwy
 """,
+
+    "topic_overall": """
+**Overall Score**
+
+Składa się z:
+- 35%: siła najlepszego tytułu
+- 30%: Opportunity z analizy konkurencji
+- 35%: Viral Score (predykcja viralowości)
+- Korekty: bonus/penalty trendów + dopasowanie do hitów kanału
+""",
+
+    "topic_viral": """
+**Viral Score**
+
+Predykcja potencjału viralowości:
+- atrakcyjność tytułu
+- dynamika tematu
+- dopasowanie do niszy
+
+Skala 0–100: im wyżej, tym lepiej.
+""",
+
+    "topic_trend": """
+**Trend Score**
+
+Ocena trendu wyszukiwań i sezonowości:
+- kierunek trendu (UP/DOWN)
+- poziom zainteresowania
+- sezonowość tematu
+
+Wyżej = większy wiatr w plecy.
+""",
+
+    "topic_opportunity": """
+**Opportunity**
+
+Analiza konkurencji:
+- nasycenie tematu vs popyt
+- porównanie podobnych filmów i ich performance
+
+Wyżej = łatwiej się przebić.
+""",
     
     "competition_bonus": """
 **Bonus/Kara za Konkurencję**
@@ -320,6 +374,61 @@ Sprawdza czy tytuł pasuje do wzorców Twoich hitów:
 - Struktury które działają
 - Max +20 punktów
 """,
+
+    "channel_views": """
+**Views (wyświetlenia)**
+
+Najprościej pozyskać:
+- YouTube Studio → Analytics → eksportuj dane (CSV)
+- YouTube Data API: pole `viewCount` dla każdego filmu
+
+Dlaczego ważne:
+- To główny sygnał popytu i baza do prognoz.
+""",
+
+    "channel_retention": """
+**Retention (retencja)**
+
+Najprościej pozyskać:
+- YouTube Studio → Analytics → zakładka „Zaangażowanie”
+- Eksportuj średnią retencję (%) per film
+
+Dlaczego ważne:
+- Retencja wpływa na rekomendacje i viral score.
+""",
+
+    "channel_label": """
+**Label (PASS/BORDER/FAIL)**
+
+Jak uzupełnić:
+- Oznacz ręcznie po wynikach (np. 75+ = PASS, 60–74 = BORDER, <60 = FAIL)
+- Możesz dodać własne etykiety po analizie
+
+Dlaczego ważne:
+- Model lepiej rozpoznaje wzorce hitów vs wtop.
+""",
+
+    "channel_title": """
+**Title (tytuł filmu)**
+
+Jak pozyskać:
+- YouTube Data API: pole `title`
+- Eksport z YouTube Studio (CSV)
+
+Dlaczego ważne:
+- Bez tytułu nie zbudujemy kontekstu ani embeddingów.
+""",
+
+    "channel_published_at": """
+**Published At (data publikacji)**
+
+Jak pozyskać:
+- YouTube Data API: pole `publishedAt`
+- Eksport z YouTube Studio
+
+Dlaczego ważne:
+- Umożliwia analizy trendu w czasie i prognozy.
+""",
 }
 
 def show_tooltip(key: str):
@@ -340,6 +449,7 @@ alerts = get_alerts()
 CHANNEL_DATA_DIR = Path("./channel_data")
 MERGED_DATA_FILE = CHANNEL_DATA_DIR / "merged_channel_data.csv"
 CACHE_FILE = Path("./app_data/cache_store.json")
+SCRIPT_SYNC_DIR = Path("./script_sync")
 CACHE_VERSION = "v1"
 
 # =============================================================================
@@ -397,6 +507,21 @@ def validate_channel_dataframe(df: pd.DataFrame) -> Dict[str, List[str]]:
 
     return issues
 
+def load_manual_scripts(directory: Path) -> List[Dict[str, str]]:
+    """Ładuje skrypty przygotowane ręcznie z katalogu."""
+    if not directory.exists():
+        return []
+
+    scripts = []
+    for ext in (".txt", ".md"):
+        for path in sorted(directory.glob(f"*{ext}")):
+            try:
+                content = path.read_text(encoding="utf-8")
+            except Exception:
+                continue
+            scripts.append({"name": path.name, "content": content})
+    return scripts
+
 def _load_cache_store() -> Dict:
     if CACHE_FILE.exists():
         try:
@@ -410,6 +535,76 @@ def _save_cache_store(cache: Dict) -> None:
     CACHE_FILE.parent.mkdir(exist_ok=True)
     with open(CACHE_FILE, "w", encoding="utf-8") as f:
         json.dump(cache, f, indent=2, ensure_ascii=False, default=str)
+
+class GoogleAIStudioClient:
+    def __init__(self, api_key: str, model: str = "gemini-1.5-pro-latest"):
+        if not GOOGLE_GENAI_AVAILABLE:
+            raise RuntimeError("Brak biblioteki google-generativeai.")
+        if not api_key:
+            raise RuntimeError("Brak Google AI Studio API key.")
+        genai.configure(api_key=api_key)
+        self._genai = genai
+        self.model_name = model
+        self.chat = self.Chat(self)
+
+    class Chat:
+        def __init__(self, outer):
+            self.completions = GoogleAIStudioClient.Chat.Completions(outer)
+
+        class Completions:
+            def __init__(self, outer):
+                self._outer = outer
+
+            def create(self, model=None, messages=None, temperature=0.7, max_tokens=1024, **kwargs):
+                prompt = _build_prompt_from_messages(messages or [])
+                model_name = model or self._outer.model_name
+                llm = self._outer._genai.GenerativeModel(model_name)
+                generation_config = self._outer._genai.types.GenerationConfig(
+                    temperature=temperature,
+                    max_output_tokens=max_tokens,
+                )
+                response = llm.generate_content(prompt, generation_config=generation_config)
+                return SimpleNamespace(
+                    choices=[SimpleNamespace(message=SimpleNamespace(content=response.text))]
+                )
+
+def _build_prompt_from_messages(messages: List[Dict[str, str]]) -> str:
+    prompt_parts = []
+    for msg in messages:
+        role = msg.get("role", "user").upper()
+        content = msg.get("content", "")
+        prompt_parts.append(f"{role}:\n{content}")
+    return "\n\n".join(prompt_parts).strip()
+
+def get_llm_settings() -> Tuple[str, str, str]:
+    provider = config.get("llm_provider", "openai")
+    if provider == "google":
+        api_key = config.get_google_api_key()
+        model = config.get("google_model", "gemini-1.5-pro-latest")
+    else:
+        api_key = config.get_api_key()
+        model = config.get("openai_model", "gpt-4o-mini")
+    return provider, api_key, model
+
+def get_llm_client(provider: str, api_key: str, model: str):
+    if not api_key:
+        return None
+    if provider == "google":
+        if not GOOGLE_GENAI_AVAILABLE:
+            return None
+        return GoogleAIStudioClient(api_key, model=model)
+    from openai import OpenAI
+    return OpenAI(api_key=api_key)
+
+def build_topic_job(topic: str, api_key: str, provider: str, model: str, **kwargs) -> Dict:
+    job = {
+        "topic": topic,
+        "api_key": api_key,
+        "provider": provider,
+        "model": model,
+    }
+    job.update(kwargs)
+    return job
 
 def _cache_get(namespace: str, key: str, ttl_seconds: int = None):
     cache = _load_cache_store()
@@ -474,13 +669,12 @@ def get_evaluator(api_key: str, data_path: str) -> YTIdeaEvaluatorV2:
     return evaluator
 
 @st.cache_resource
-def get_advanced_analytics(data_path: str, _api_key: str = None):
+def get_advanced_analytics(data_path: str, provider: str, model: str, _api_key: str = None):
     """Cache'owane advanced analytics"""
     if not ADVANCED_AVAILABLE:
         return None
-    
-    from openai import OpenAI
-    client = OpenAI(api_key=_api_key) if _api_key else None
+
+    client = get_llm_client(provider, _api_key, model) if _api_key else None
     
     analytics = AdvancedAnalytics(openai_client=client)
     df = pd.read_csv(data_path)
@@ -748,26 +942,66 @@ with st.sidebar:
     st.divider()
     
     # === API KEY ===
-    st.subheader("🔑 OpenAI API")
-    
-    saved_key = config.get_api_key()
-    api_key = st.text_input(
-        "API Key",
-        value=saved_key,
-        type="password",
-        help="Twój klucz OpenAI API"
+    st.subheader("🔑 LLM API")
+
+    current_provider = config.get("llm_provider", "openai")
+    provider_choice = st.radio(
+        "Dostawca",
+        list(LLM_PROVIDER_LABELS.keys()),
+        format_func=lambda key: LLM_PROVIDER_LABELS[key],
+        index=list(LLM_PROVIDER_LABELS.keys()).index(current_provider),
     )
-    
-    if api_key != saved_key:
-        if st.button("💾 Zapisz klucz"):
-            config.set_api_key(api_key)
-            st.success("✅ Zapisano!")
-            st.rerun()
-    
+    if provider_choice != current_provider:
+        config.set("llm_provider", provider_choice)
+        st.rerun()
+
+    if provider_choice == "openai":
+        saved_key = config.get_api_key()
+        api_key = st.text_input(
+            "OpenAI API Key",
+            value=saved_key,
+            type="password",
+            help="Twój klucz OpenAI API",
+            key="openai_api_key_input",
+        )
+        openai_model = st.text_input(
+            "Model OpenAI",
+            value=config.get("openai_model", "gpt-4o-mini"),
+        )
+        if openai_model != config.get("openai_model", "gpt-4o-mini"):
+            config.set("openai_model", openai_model)
+        if api_key != saved_key:
+            if st.button("💾 Zapisz klucz OpenAI"):
+                config.set_api_key(api_key)
+                st.success("✅ Zapisano!")
+                st.rerun()
+    else:
+        saved_key = config.get_google_api_key()
+        api_key = st.text_input(
+            "Google AI Studio API Key",
+            value=saved_key,
+            type="password",
+            help="Twój klucz Google AI Studio (Gemini)",
+            key="google_ai_key_input",
+        )
+        google_model = st.text_input(
+            "Model Gemini",
+            value=config.get("google_model", "gemini-1.5-pro-latest"),
+        )
+        if google_model != config.get("google_model", "gemini-1.5-pro-latest"):
+            config.set("google_model", google_model)
+        if api_key != saved_key:
+            if st.button("💾 Zapisz klucz Google"):
+                config.set_google_api_key(api_key)
+                st.success("✅ Zapisano!")
+                st.rerun()
+
     if api_key:
         st.success("✅ API Key ustawiony")
     else:
         st.warning("⚠️ Brak API Key")
+    if provider_choice == "google" and not GOOGLE_GENAI_AVAILABLE:
+        st.warning("⚠️ Brak biblioteki google-generativeai. Dodaj ją do środowiska.")
     
     st.divider()
 
@@ -778,11 +1012,12 @@ with st.sidebar:
         "Advanced Analytics": ADVANCED_AVAILABLE,
         "Competitor Tracker": COMPETITOR_TRACKER_AVAILABLE,
         "YouTube API": GOOGLE_API_AVAILABLE,
+        "Google AI Studio": GOOGLE_GENAI_AVAILABLE,
     }
     for name, available in module_status.items():
         st.caption(f"{'✅' if available else '⚠️'} {name}")
     if not api_key:
-        st.info("Tryb bez API: generowanie tytułów/obietnic działa z szablonów.")
+        st.info(f"Tryb bez API ({LLM_PROVIDER_LABELS[provider_choice]}): generowanie tytułów/obietnic działa z szablonów.")
     
     st.divider()
     
@@ -848,16 +1083,40 @@ with st.sidebar:
     merged_df = load_merged_data()
     if merged_df is not None:
         st.success(f"✅ {len(merged_df)} filmów")
-        
-        cols = []
-        if "views" in merged_df.columns:
-            cols.append(f"views: ✅")
-        if "retention" in merged_df.columns:
-            cols.append(f"retention: ✅")
-        if "label" in merged_df.columns:
-            cols.append(f"labels: ✅")
-        
-        st.caption(" | ".join(cols) if cols else "Podstawowe dane")
+
+        required_cols = {"title", "views"}
+        recommended_cols = {"retention", "label", "published_at"}
+        present_cols = set(merged_df.columns)
+        missing_required = sorted(required_cols - present_cols)
+        missing_recommended = sorted(recommended_cols - present_cols)
+
+        col1, col2, col3, col4 = st.columns(4)
+        with col1:
+            st.metric("Filmy", f"{len(merged_df)}")
+        with col2:
+            st.metric(
+                "Views",
+                "✅" if "views" in present_cols else "❌",
+                help=show_tooltip("channel_views"),
+            )
+        with col3:
+            st.metric(
+                "Retention",
+                "✅" if "retention" in present_cols else "❌",
+                help=show_tooltip("channel_retention"),
+            )
+        with col4:
+            st.metric(
+                "Label",
+                "✅" if "label" in present_cols else "❌",
+                help=show_tooltip("channel_label"),
+            )
+
+        st.caption("Wymagane: title, views")
+        if missing_required:
+            st.warning(f"Brakuje wymaganych danych: {', '.join(missing_required)}.")
+        if missing_recommended:
+            st.info(f"Brakuje rekomendowanych danych: {', '.join(missing_recommended)}.")
     else:
         st.warning("⚠️ Brak danych")
         st.caption("Użyj YouTube Sync lub wgraj CSV")
@@ -874,6 +1133,9 @@ with st.sidebar:
     st.metric("Ocen w historii", total_evals)
     st.metric("Pomysłów w Vault", vault_ideas)
     st.metric("Tracked filmów", tracked)
+
+# Active LLM settings
+llm_provider, api_key, llm_model = get_llm_settings()
 
 # =============================================================================
 # MAIN TABS
@@ -969,19 +1231,21 @@ with tab_evaluate:
             topics = topics[:batch_limit]
             results = []
             for t in topics:
-                job = {
-                    "topic": t,
-                    "n_titles": 3,
-                    "n_promises": 3,
-                    "api_key": api_key,
-                    "inc_competition": inc_competition,
-                    "inc_similar": inc_similar,
-                    "inc_trends": inc_trends,
-                    "inc_external": inc_external,
-                    "inc_viral": inc_viral,
-                    "inc_timeline": inc_timeline,
-                    "result": {"topic": t, "timestamp": datetime.now().isoformat()}
-                }
+                job = build_topic_job(
+                    t,
+                    api_key,
+                    llm_provider,
+                    llm_model,
+                    n_titles=3,
+                    n_promises=3,
+                    inc_competition=inc_competition,
+                    inc_similar=inc_similar,
+                    inc_trends=inc_trends,
+                    inc_external=inc_external,
+                    inc_viral=inc_viral,
+                    inc_timeline=inc_timeline,
+                    result={"topic": t, "timestamp": datetime.now().isoformat()},
+                )
                 for stg in [0, 1, 2, 5]:
                     job = _topic_stage_run(stg, job)
                 res = job.get("result", {})
@@ -1045,15 +1309,11 @@ with tab_evaluate:
         if not topic:
             return job
     
-        # Initialize OpenAI client and evaluator only when needed
+        # Initialize LLM client and evaluator only when needed
         api_key_local = job.get("api_key", "") or ""
-        client = None
-        if api_key_local:
-            try:
-                from openai import OpenAI
-                client = OpenAI(api_key=api_key_local)
-            except Exception:
-                client = None
+        provider_local = job.get("provider", "openai")
+        model_local = job.get("model", "gpt-4o-mini")
+        client = get_llm_client(provider_local, api_key_local, model_local)
     
         if not TOPIC_ANALYZER_AVAILABLE:
             job["error"] = "Topic analyzer niedostępny. Sprawdź pliki i requirements."
@@ -1266,23 +1526,25 @@ with tab_evaluate:
         if not topic_input_main:
             st.warning("Wpisz temat.")
         elif not api_key:
-            st.error("❌ Brak OpenAI API Key. Dodaj klucz w sidebarze.")
+            st.error(f"❌ Brak API Key ({LLM_PROVIDER_LABELS.get(llm_provider, 'LLM')}). Dodaj klucz w sidebarze.")
         elif merged_df is None:
             st.warning("⚠️ Najpierw wczytaj dane kanału (zakładka: Dane).")
         else:
-            job = {
-                "topic": topic_input_main.strip(),
-                "n_titles": n_titles_main,
-                "n_promises": n_promises_main,
-                "api_key": api_key,
-                "inc_competition": inc_competition,
-                "inc_similar": inc_similar,
-                "inc_trends": inc_trends,
-                "inc_external": inc_external,
-                "inc_viral": inc_viral,
-                "inc_timeline": inc_timeline,
-                "result": {"topic": topic_input_main.strip(), "timestamp": datetime.now().isoformat()}
-            }
+            job = build_topic_job(
+                topic_input_main.strip(),
+                api_key,
+                llm_provider,
+                llm_model,
+                n_titles=n_titles_main,
+                n_promises=n_promises_main,
+                inc_competition=inc_competition,
+                inc_similar=inc_similar,
+                inc_trends=inc_trends,
+                inc_external=inc_external,
+                inc_viral=inc_viral,
+                inc_timeline=inc_timeline,
+                result={"topic": topic_input_main.strip(), "timestamp": datetime.now().isoformat()},
+            )
             with st.spinner("Oceniam temat i zapisuję..."):
                 for stg in [0, 1, 2, 3, 4, 5]:
                     job = _topic_stage_run(stg, job)
@@ -1316,13 +1578,15 @@ with tab_evaluate:
             if st.session_state.topic_job_main:
                 st.session_state.topic_job_main["stage_done"] = 2
                 st.session_state.topic_result_main = st.session_state.topic_job_main.get("result")
-            st.session_state.topic_job_main = st.session_state.topic_job_main or {
-                "topic": topic_input_main.strip(),
-                "n_titles": n_titles_main,
-                "n_promises": n_promises_main,
-                "api_key": api_key,
-                "result": {"topic": topic_input_main.strip(), "timestamp": datetime.now().isoformat()}
-            }
+            st.session_state.topic_job_main = st.session_state.topic_job_main or build_topic_job(
+                topic_input_main.strip(),
+                api_key,
+                llm_provider,
+                llm_model,
+                n_titles=n_titles_main,
+                n_promises=n_promises_main,
+                result={"topic": topic_input_main.strip(), "timestamp": datetime.now().isoformat()},
+            )
             st.session_state.topic_job_main["n_titles"] = n_titles_main
             st.session_state.topic_job_main = _topic_stage_run(3, st.session_state.topic_job_main)
             st.session_state.topic_result_main = st.session_state.topic_job_main.get("result")
@@ -1331,50 +1595,56 @@ with tab_evaluate:
             if st.session_state.topic_job_main:
                 st.session_state.topic_job_main["stage_done"] = 3
                 st.session_state.topic_result_main = st.session_state.topic_job_main.get("result")
-            st.session_state.topic_job_main = st.session_state.topic_job_main or {
-                "topic": topic_input_main.strip(),
-                "n_titles": n_titles_main,
-                "n_promises": n_promises_main,
-                "api_key": api_key,
-                "result": {"topic": topic_input_main.strip(), "timestamp": datetime.now().isoformat()}
-            }
+            st.session_state.topic_job_main = st.session_state.topic_job_main or build_topic_job(
+                topic_input_main.strip(),
+                api_key,
+                llm_provider,
+                llm_model,
+                n_titles=n_titles_main,
+                n_promises=n_promises_main,
+                result={"topic": topic_input_main.strip(), "timestamp": datetime.now().isoformat()},
+            )
             st.session_state.topic_job_main["n_promises"] = n_promises_main
             st.session_state.topic_job_main = _topic_stage_run(4, st.session_state.topic_job_main)
             st.session_state.topic_result_main = st.session_state.topic_job_main.get("result")
     
     # Initialize job
     if start_step and topic_input_main:
-        st.session_state.topic_job_main = {
-            "topic": topic_input_main.strip(),
-            "n_titles": n_titles_main,
-            "n_promises": n_promises_main,
-            "api_key": api_key,
-            "stage": 0,
-            "inc_competition": inc_competition,
-            "inc_similar": inc_similar,
-            "inc_trends": inc_trends,
-            "inc_external": inc_external,
-            "inc_viral": inc_viral,
-            "inc_timeline": inc_timeline,
-            "result": {"topic": topic_input_main.strip(), "timestamp": datetime.now().isoformat()}
-        }
+        st.session_state.topic_job_main = build_topic_job(
+            topic_input_main.strip(),
+            api_key,
+            llm_provider,
+            llm_model,
+            n_titles=n_titles_main,
+            n_promises=n_promises_main,
+            stage=0,
+            inc_competition=inc_competition,
+            inc_similar=inc_similar,
+            inc_trends=inc_trends,
+            inc_external=inc_external,
+            inc_viral=inc_viral,
+            inc_timeline=inc_timeline,
+            result={"topic": topic_input_main.strip(), "timestamp": datetime.now().isoformat()},
+        )
         st.session_state.topic_job_main = _topic_stage_run(0, st.session_state.topic_job_main)
         st.session_state.topic_result_main = st.session_state.topic_job_main.get("result")
 
     if quick_preview and topic_input_main:
-        job = {
-            "topic": topic_input_main.strip(),
-            "n_titles": 0,
-            "n_promises": 0,
-            "api_key": "",
-            "inc_competition": inc_competition,
-            "inc_similar": inc_similar,
-            "inc_trends": inc_trends,
-            "inc_external": inc_external,
-            "inc_viral": inc_viral,
-            "inc_timeline": inc_timeline,
-            "result": {"topic": topic_input_main.strip(), "timestamp": datetime.now().isoformat()}
-        }
+        job = build_topic_job(
+            topic_input_main.strip(),
+            "",
+            llm_provider,
+            llm_model,
+            n_titles=0,
+            n_promises=0,
+            inc_competition=inc_competition,
+            inc_similar=inc_similar,
+            inc_trends=inc_trends,
+            inc_external=inc_external,
+            inc_viral=inc_viral,
+            inc_timeline=inc_timeline,
+            result={"topic": topic_input_main.strip(), "timestamp": datetime.now().isoformat()},
+        )
         for stg in [0, 1, 2, 5]:
             job = _topic_stage_run(stg, job)
         st.session_state.topic_job_main = job
@@ -1387,19 +1657,21 @@ with tab_evaluate:
     
     # Full run
     if full_run and topic_input_main:
-        job = {
-            "topic": topic_input_main.strip(),
-            "n_titles": n_titles_main,
-            "n_promises": n_promises_main,
-            "api_key": api_key,
-            "inc_competition": inc_competition,
-            "inc_similar": inc_similar,
-            "inc_trends": inc_trends,
-            "inc_external": inc_external,
-            "inc_viral": inc_viral,
-            "inc_timeline": inc_timeline,
-            "result": {"topic": topic_input_main.strip(), "timestamp": datetime.now().isoformat()}
-        }
+        job = build_topic_job(
+            topic_input_main.strip(),
+            api_key,
+            llm_provider,
+            llm_model,
+            n_titles=n_titles_main,
+            n_promises=n_promises_main,
+            inc_competition=inc_competition,
+            inc_similar=inc_similar,
+            inc_trends=inc_trends,
+            inc_external=inc_external,
+            inc_viral=inc_viral,
+            inc_timeline=inc_timeline,
+            result={"topic": topic_input_main.strip(), "timestamp": datetime.now().isoformat()},
+        )
         with st.spinner("Oceniam temat (pełna analiza)..."):
             for stg in [0, 1, 2, 3, 4, 5]:
                 job = _topic_stage_run(stg, job)
@@ -1501,7 +1773,7 @@ with tab_evaluate:
         if res.get("recommendation"):
             st.info(res.get("recommendation"))
         if not api_key:
-            st.warning("Tryb bez API: tytuły/obietnice z szablonów, bez LLM.")
+            st.warning(f"Tryb bez API ({LLM_PROVIDER_LABELS.get(llm_provider, 'LLM')}): tytuły/obietnice z szablonów, bez LLM.")
 
         comp = res.get("competition", {})
         trend = res.get("trends", {}).get("overall", {})
@@ -1509,13 +1781,13 @@ with tab_evaluate:
         st.markdown("#### ✅ Najważniejsze wnioski")
         takeaway_cols = st.columns(4)
         with takeaway_cols[0]:
-            st.metric("Overall", f"{score_val}/100")
+            st.metric("Overall", f"{score_val}/100", help=show_tooltip("topic_overall"))
         with takeaway_cols[1]:
-            st.metric("Viral", f"{viral_val}/100")
+            st.metric("Viral", f"{viral_val}/100", help=show_tooltip("topic_viral"))
         with takeaway_cols[2]:
-            st.metric("Trend", f"{trend.get('score', 0) if trend else 0}")
+            st.metric("Trend", f"{trend.get('score', 0) if trend else 0}", help=show_tooltip("topic_trend"))
         with takeaway_cols[3]:
-            st.metric("Opportunity", f"{comp.get('opportunity_score', 0)}")
+            st.metric("Opportunity", f"{comp.get('opportunity_score', 0)}", help=show_tooltip("topic_opportunity"))
 
         # Timeline
         if res.get("performance_timeline"):
@@ -1530,11 +1802,11 @@ with tab_evaluate:
         # Quick signals
         c1, c2, c3 = st.columns(3)
         with c1:
-            st.metric("Konkurencja (opportunity)", f"{comp.get('opportunity_score', 0)}")
+            st.metric("Konkurencja (opportunity)", f"{comp.get('opportunity_score', 0)}", help=show_tooltip("topic_opportunity"))
         with c2:
-            st.metric("Viral Score", f"{viral_val}")
+            st.metric("Viral Score", f"{viral_val}", help=show_tooltip("topic_viral"))
         with c3:
-            st.metric("Trend Score", f"{trend.get('score', 0) if trend else 0}")
+            st.metric("Trend Score", f"{trend.get('score', 0) if trend else 0}", help=show_tooltip("topic_trend"))
 
         if merged_df is None or "views" not in merged_df.columns:
             st.info("⚠️ Brak danych kanału (views). Wynik jest w trybie uproszczonym.")
@@ -1685,14 +1957,16 @@ with tab_evaluate:
             )
             if st.button("⚡ Przepisz tytuł", key="rewrite_title"):
                 if not api_key:
-                    st.warning("Dodaj OpenAI API Key aby przepisać tytuł.")
+                    st.warning(f"Dodaj API Key ({LLM_PROVIDER_LABELS.get(llm_provider, 'LLM')}) aby przepisać tytuł.")
                 else:
                     try:
-                        from openai import OpenAI
-                        client = OpenAI(api_key=api_key)
+                        client = get_llm_client(llm_provider, api_key, llm_model)
+                        if not client:
+                            st.warning(f"Nie udało się zainicjalizować {LLM_PROVIDER_LABELS.get(llm_provider, 'LLM')}.")
+                            raise RuntimeError("Brak klienta LLM.")
                         prompt = f"Napisz 1 wariant tytułu w stylu: {rewrite_style}. Oryginał: {selected_title_str}"
                         resp = client.chat.completions.create(
-                            model=config.get("openai_model", "gpt-4o-mini"),
+                            model=llm_model,
                             messages=[{"role": "user", "content": prompt}],
                             temperature=0.7,
                         )
@@ -1709,14 +1983,16 @@ with tab_evaluate:
                 title_b = st.text_input("Tytuł B", value=title_opts[1] if len(title_opts) > 1 else "", key="compare_title_b")
             if st.button("Porównaj tytuły", key="compare_titles"):
                 if not api_key:
-                    st.warning("Dodaj OpenAI API Key aby porównać tytuły.")
+                    st.warning(f"Dodaj API Key ({LLM_PROVIDER_LABELS.get(llm_provider, 'LLM')}) aby porównać tytuły.")
                 else:
                     try:
-                        from openai import OpenAI
-                        client = OpenAI(api_key=api_key)
+                        client = get_llm_client(llm_provider, api_key, llm_model)
+                        if not client:
+                            st.warning(f"Nie udało się zainicjalizować {LLM_PROVIDER_LABELS.get(llm_provider, 'LLM')}.")
+                            raise RuntimeError("Brak klienta LLM.")
                         prompt = f"Porównaj dwa tytuły i wskaż lepszy. A: {title_a} B: {title_b}. Zwróć krótki werdykt."
                         resp = client.chat.completions.create(
-                            model=config.get("openai_model", "gpt-4o-mini"),
+                            model=llm_model,
                             messages=[{"role": "user", "content": prompt}],
                             temperature=0.3,
                         )
@@ -1766,14 +2042,16 @@ with tab_evaluate:
             hook_text = st.text_area("Wklej hook (2-3 zdania)", key="hook_quick_text", height=80)
             if st.button("Oceń hook", key="hook_quick_btn"):
                 if not api_key:
-                    st.warning("Dodaj OpenAI API Key aby ocenić hook.")
+                    st.warning(f"Dodaj API Key ({LLM_PROVIDER_LABELS.get(llm_provider, 'LLM')}) aby ocenić hook.")
                 else:
                     try:
-                        from openai import OpenAI
-                        client = OpenAI(api_key=api_key)
+                        client = get_llm_client(llm_provider, api_key, llm_model)
+                        if not client:
+                            st.warning(f"Nie udało się zainicjalizować {LLM_PROVIDER_LABELS.get(llm_provider, 'LLM')}.")
+                            raise RuntimeError("Brak klienta LLM.")
                         prompt = f"Oceń hook (0-100) i podaj 1 zdanie uzasadnienia. Hook: {hook_text}"
                         resp = client.chat.completions.create(
-                            model=config.get("openai_model", "gpt-4o-mini"),
+                            model=llm_model,
                             messages=[{"role": "user", "content": prompt}],
                             temperature=0.4,
                         )
@@ -2023,7 +2301,7 @@ with tab_tools:
         
         if st.button("📅 Generuj kalendarz") and merged_df is not None and ADVANCED_AVAILABLE:
             data_path = str(CHANNEL_DATA_DIR / "synced_channel_data.csv") if (CHANNEL_DATA_DIR / "synced_channel_data.csv").exists() else str(MERGED_DATA_FILE)
-            analytics = get_advanced_analytics(data_path, api_key)
+            analytics = get_advanced_analytics(data_path, llm_provider, llm_model, api_key)
             
             if analytics:
                 calendar = analytics.get_optimal_upload_calendar()
@@ -2056,7 +2334,7 @@ with tab_tools:
 
         if st.button("🧠 Wygeneruj plan", key="gen_content_plan"):
             if not api_key:
-                st.error("❌ Brak OpenAI API Key. Dodaj klucz w sidebarze.")
+                st.error(f"❌ Brak API Key ({LLM_PROVIDER_LABELS.get(llm_provider, 'LLM')}). Dodaj klucz w sidebarze.")
             elif merged_df is None:
                 st.warning("⚠️ Najpierw wczytaj dane kanału (zakładka: Dane).")
             else:
@@ -2084,17 +2362,14 @@ with tab_tools:
 
                 # 2) LLM: zaproponuj tematy i kąty
                 plan_items = []
-                use_llm = False
-                if api_key:
-                    try:
-                        from openai import OpenAI
-                        use_llm = True
-                    except Exception as e:
-                        st.warning(f"Nie udało się zainicjalizować OpenAI: {e}")
+                client = get_llm_client(llm_provider, api_key, llm_model)
+                use_llm = client is not None
+                if api_key and not use_llm:
+                    st.warning(f"Nie udało się zainicjalizować {LLM_PROVIDER_LABELS.get(llm_provider, 'LLM')}.")
 
                 if use_llm:
                     try:
-                        client = OpenAI(api_key=api_key)
+                        client = get_llm_client(llm_provider, api_key, llm_model)
 
                         prompt = f"""Jesteś strategiem YouTube dla kanału dark documentary po polsku.
 Zadanie: zaproponuj {n_items} tematów na kolejne tygodnie.
@@ -2117,7 +2392,7 @@ Bez komentarzy i bez markdown.
 """
 
                         resp = client.chat.completions.create(
-                            model=config.get("openai_model", "gpt-4o-mini"),
+                            model=llm_model,
                             messages=[
                                 {"role": "system", "content": "Zwracaj tylko JSON. Bez markdown."},
                                 {"role": "user", "content": prompt},
@@ -2199,8 +2474,9 @@ Bez komentarzy i bez markdown.
                     eval_results = []
                     if TOPIC_ANALYZER_AVAILABLE:
                         try:
-                            from openai import OpenAI
-                            client = OpenAI(api_key=api_key)
+                            client = get_llm_client(llm_provider, api_key, llm_model)
+                            if not client and api_key:
+                                st.warning(f"Nie udało się zainicjalizować {LLM_PROVIDER_LABELS.get(llm_provider, 'LLM')}.")
                             topic_eval = get_topic_evaluator(client, merged_df)
                             for item in plan_items:
                                 topic = (item.get("topic") or "").strip()
@@ -2668,7 +2944,7 @@ Bez komentarzy i bez markdown.
             
                 if st.button("🔍 Analizuj DNA"):
                     data_path = str(CHANNEL_DATA_DIR / "synced_channel_data.csv") if (CHANNEL_DATA_DIR / "synced_channel_data.csv").exists() else str(MERGED_DATA_FILE)
-                    analytics = get_advanced_analytics(data_path, api_key)
+                    analytics = get_advanced_analytics(data_path, llm_provider, llm_model, api_key)
                 
                     if analytics:
                         dna = analytics.get_packaging_dna()
@@ -3120,6 +3396,18 @@ with tab_data:
                     st.rerun()
         with st.expander("📖 Instrukcje"):
             st.markdown(yt_sync.setup_instructions())
+
+    st.subheader("📝 Ręczny sync skryptów")
+    manual_sync_help = f"Wrzucaj gotowe skrypty do folderu: {SCRIPT_SYNC_DIR.resolve()}"
+    if st.button("📥 Wczytaj skrypty z folderu", help=manual_sync_help, use_container_width=True):
+        SCRIPT_SYNC_DIR.mkdir(exist_ok=True)
+        scripts = load_manual_scripts(SCRIPT_SYNC_DIR)
+        if scripts:
+            st.success(f"Zsynchronizowano {len(scripts)} skryptów z folderu.")
+            with st.expander("📄 Podgląd nazw plików"):
+                st.write([script["name"] for script in scripts])
+        else:
+            st.warning("Nie znaleziono żadnych skryptów w podanym folderze.")
     
     st.divider()
     
@@ -3229,12 +3517,28 @@ with tab_diag:
         "Advanced Analytics": ADVANCED_AVAILABLE,
         "Competitor Tracker": COMPETITOR_TRACKER_AVAILABLE,
         "YouTube API": GOOGLE_API_AVAILABLE,
+        "Google AI Studio": GOOGLE_GENAI_AVAILABLE,
     }
     for name, available in diag_modules.items():
         st.markdown(f"{'✅' if available else '⚠️'} {name}")
 
     st.subheader("Dane kanału")
     if merged_df is not None:
+        present_cols = set(merged_df.columns)
+        required_cols = {"title", "views"}
+        recommended_cols = {"retention", "label", "published_at"}
+        missing_required = sorted(required_cols - present_cols)
+        missing_recommended = sorted(recommended_cols - present_cols)
+
+        st.markdown("**Kompletność danych**")
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            st.metric("Wymagane", f"{len(required_cols) - len(missing_required)}/{len(required_cols)}")
+        with c2:
+            st.metric("Rekomendowane", f"{len(recommended_cols) - len(missing_recommended)}/{len(recommended_cols)}")
+        with c3:
+            st.metric("Kolumny razem", f"{len(present_cols)}")
+
         issues = validate_channel_dataframe(merged_df)
         if issues["missing_required"]:
             st.error(f"Brak wymaganych kolumn: {', '.join(issues['missing_required'])}")
@@ -3242,8 +3546,45 @@ with tab_diag:
             st.warning(f"Brak rekomendowanych kolumn: {', '.join(issues['missing_recommended'])}")
         for warning in issues["warnings"]:
             st.warning(warning)
+
+        if missing_required or missing_recommended:
+            st.markdown("**Jak uzupełnić brakujące dane?**")
+            if "title" in missing_required:
+                st.info(show_tooltip("channel_title"))
+            if "views" in missing_required:
+                st.info(show_tooltip("channel_views"))
+            if "retention" in missing_recommended:
+                st.info(show_tooltip("channel_retention"))
+            if "label" in missing_recommended:
+                st.info(show_tooltip("channel_label"))
+            if "published_at" in missing_recommended:
+                st.info(show_tooltip("channel_published_at"))
     else:
         st.info("Brak danych kanału.")
+
+    st.subheader("Sugestie usprawnień analizy")
+    tips = []
+    if merged_df is None:
+        tips.append("Dodaj dane kanału (CSV lub YouTube Sync), aby uruchomić pełne analizy.")
+    else:
+        if "retention" not in merged_df.columns:
+            tips.append("Dodaj retencję, aby lepiej oceniać hook i viral score.")
+        if "label" not in merged_df.columns:
+            tips.append("Dodaj etykiety PASS/BORDER/FAIL — poprawia dopasowanie do wzorców hitów.")
+        if "published_at" not in merged_df.columns:
+            tips.append("Dodaj daty publikacji, aby analizy trendu i sezonowości były dokładniejsze.")
+    if not GOOGLE_API_AVAILABLE:
+        tips.append("Zainstaluj biblioteki YouTube API, aby korzystać z pełnego syncu.")
+    if not TOPIC_ANALYZER_AVAILABLE:
+        tips.append("Włącz moduł Topic Analyzer, aby uruchomić pełny tryb oceny tematu.")
+    if not ADVANCED_AVAILABLE:
+        tips.append("Włącz Advanced Analytics, aby dostać analizę hooka, DNA i competition scan.")
+    tips.append("Jeśli masz transkrypty, użyj syncu z transkryptami — poprawia analizę hooka i retention.")
+    tips.append("Dodaj więcej filmów historycznych (min. 30-50), aby model ML był stabilniejszy.")
+
+    if tips:
+        for tip in tips:
+            st.markdown(f"- {tip}")
 
     st.subheader("Sync i cache")
     yt_sync = get_youtube_sync()
