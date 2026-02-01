@@ -1116,51 +1116,54 @@ with st.sidebar:
 
     if google_enabled:
         if not GOOGLE_GENAI_AVAILABLE:
-            st.warning("⚠️ Brak biblioteki google-generativeai")
-        else:
-            saved_google_key = config.get_google_api_key()
-            google_api_key = st.text_input(
-                "Google AI Studio API Key",
-                value=saved_google_key,
-                type="password",
-                help="Twój klucz Google AI Studio (Gemini)",
-                key="google_ai_key_input",
-            )
-            google_model = st.text_input(
-                "Model Gemini",
-                value=config.get("google_model", "gemini-1.5-pro-latest"),
-                key="google_model_input"
-            )
-            if google_model != config.get("google_model", "gemini-1.5-pro-latest"):
-                config.set("google_model", google_model)
-            if google_api_key != saved_google_key:
-                if st.button("💾 Zapisz klucz Google", key="save_google"):
-                    config.set_google_api_key(google_api_key)
-                    st.success("✅ Zapisano!")
-                    st.rerun()
+            st.warning("⚠️ Brak biblioteki google-generativeai. Zainstaluj: `pip install google-generativeai`")
 
-            # Status połączenia Google
-            google_status_key = "google_connection_status"
-            if google_status_key not in st.session_state:
-                st.session_state[google_status_key] = {"tested": False, "success": False, "message": ""}
+        saved_google_key = config.get_google_api_key()
+        google_api_key = st.text_input(
+            "Google AI Studio API Key",
+            value=saved_google_key,
+            type="password",
+            help="Twój klucz Google AI Studio (Gemini)",
+            key="google_ai_key_input",
+        )
+        google_model = st.text_input(
+            "Model Gemini",
+            value=config.get("google_model", "gemini-1.5-pro-latest"),
+            key="google_model_input"
+        )
+        if google_model != config.get("google_model", "gemini-1.5-pro-latest"):
+            config.set("google_model", google_model)
+        if google_api_key != saved_google_key:
+            if st.button("💾 Zapisz klucz Google", key="save_google"):
+                config.set_google_api_key(google_api_key)
+                st.success("✅ Zapisano!")
+                st.rerun()
 
-            col_status_g, col_test_g = st.columns([2, 1])
-            with col_test_g:
-                if st.button("🔌 Test", key="test_google", use_container_width=True):
-                    with st.spinner("Testuję..."):
-                        success, msg = test_google_connection(google_api_key, google_model)
-                        st.session_state[google_status_key] = {"tested": True, "success": success, "message": msg}
-            with col_status_g:
-                status = st.session_state[google_status_key]
-                if status["tested"]:
-                    if status["success"]:
-                        st.markdown(f"🟢 **{status['message']}**")
-                    else:
-                        st.markdown(f"🔴 **{status['message']}**")
-                elif google_api_key:
-                    st.markdown("⚪ *Kliknij Test*")
+        # Status połączenia Google
+        google_status_key = "google_connection_status"
+        if google_status_key not in st.session_state:
+            st.session_state[google_status_key] = {"tested": False, "success": False, "message": ""}
+
+        col_status_g, col_test_g = st.columns([2, 1])
+        with col_test_g:
+            test_disabled = not GOOGLE_GENAI_AVAILABLE
+            if st.button("🔌 Test", key="test_google", use_container_width=True, disabled=test_disabled):
+                with st.spinner("Testuję..."):
+                    success, msg = test_google_connection(google_api_key, google_model)
+                    st.session_state[google_status_key] = {"tested": True, "success": success, "message": msg}
+        with col_status_g:
+            status = st.session_state[google_status_key]
+            if not GOOGLE_GENAI_AVAILABLE:
+                st.markdown("⚪ *Zainstaluj bibliotekę*")
+            elif status["tested"]:
+                if status["success"]:
+                    st.markdown(f"🟢 **{status['message']}**")
                 else:
-                    st.markdown("⚪ *Brak klucza*")
+                    st.markdown(f"🔴 **{status['message']}**")
+            elif google_api_key:
+                st.markdown("⚪ *Kliknij Test*")
+            else:
+                st.markdown("⚪ *Brak klucza*")
     else:
         st.caption("Google AI Studio wyłączony")
 
