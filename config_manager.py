@@ -43,6 +43,7 @@ class AppConfig:
     
     DEFAULT_CONFIG = {
         "openai_api_key": "",
+        "google_ai_api_key": "",
         "niche_keywords": ["tajemnice", "zagadki", "spiski", "ufo", "katastrofy"],
         "youtube_credentials_path": "",
         "youtube_api_key": "",
@@ -53,6 +54,9 @@ class AppConfig:
         "default_optimize_variants": False,
         "channel_id": "",
         "last_sync": None,
+        "llm_provider": "openai",
+        "openai_model": "gpt-4o-mini",
+        "google_model": "gemini-1.5-pro-latest",
     }
     
     def __init__(self):
@@ -93,6 +97,14 @@ class AppConfig:
     def set_api_key(self, key: str):
         """Zapisuje OpenAI API key"""
         self.set("openai_api_key", key)
+
+    def get_google_api_key(self) -> str:
+        """Pobiera Google AI Studio API key"""
+        return self.config.get("google_ai_api_key", "")
+
+    def set_google_api_key(self, key: str):
+        """Zapisuje Google AI Studio API key"""
+        self.set("google_ai_api_key", key)
 
     def get_youtube_api_key(self) -> str:
         """Pobiera YouTube API key"""
