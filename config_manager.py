@@ -44,6 +44,8 @@ class AppConfig:
     DEFAULT_CONFIG = {
         "openai_api_key": "",
         "google_ai_api_key": "",
+        "openai_enabled": True,
+        "google_enabled": True,
         "niche_keywords": ["tajemnice", "zagadki", "spiski", "ufo", "katastrofy"],
         "youtube_credentials_path": "",
         "youtube_api_key": "",
