@@ -138,7 +138,7 @@ st.markdown("""
 }
 .verdict-border {
     background: linear-gradient(135deg, #4a4000 0%, #5a5010 100%);
-    color: #FFD700;
+    color: #FFFACD; /* Jaśniejszy żółty dla lepszego kontrastu */
 }
 .verdict-fail {
     background: linear-gradient(135deg, #4a1a1a 0%, #5a2a2a 100%);
@@ -734,14 +734,20 @@ def record_llm_call(kind: str, cached: bool = False) -> None:
     stats["by_kind"][kind] = stats["by_kind"].get(kind, 0) + 1
 
 @st.cache_resource
-def get_evaluator(api_key: str, data_path: str) -> YTIdeaEvaluatorV2:
-    """Cache'owany evaluator"""
+def get_evaluator(api_key: str, data_path: str):
+    """Cache'owany evaluator. Zwraca (evaluator, error_msg) lub (None, error_msg)."""
     evaluator = YTIdeaEvaluatorV2()
-    evaluator.initialize(api_key)
-    evaluator.load_data(data_path)
-    evaluator.build_embeddings()
-    evaluator.train_models()
-    return evaluator
+
+    if not evaluator.initialize(api_key):
+        return None, evaluator.get_init_error() or "Nie udało się zainicjalizować evaluatora"
+
+    try:
+        evaluator.load_data(data_path)
+        evaluator.build_embeddings()
+        evaluator.train_models()
+        return evaluator, None
+    except Exception as e:
+        return None, f"Błąd ładowania danych: {str(e)}"
 
 @st.cache_resource
 def get_advanced_analytics(data_path: str, provider: str, model: str, _api_key: str = None):
@@ -914,8 +920,8 @@ def render_variants_with_scores(result: Dict, evaluator=None, analytics=None):
                 try:
                     s = analytics.ab_tester._calculate_ctr_score(var)
                     score = f" `{s:.0f}`"
-                except:
-                    pass
+                except (TypeError, ValueError, AttributeError):
+                    pass  # Score niedostępny
             st.markdown(f"{i}. {var}{score}")
     
     with col2:

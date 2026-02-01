@@ -111,16 +111,16 @@ class TitleGenerator:
         return patterns
     
     def _extract_trigger_words(self, titles: List[str]) -> List[str]:
-        """Wyciąga słowa które powtarzają się w hitach"""
+        """Wyciąga słowa które powtarzają się w hitach (zoptymalizowane)"""
         words = {}
         stopwords = {'i', 'w', 'na', 'do', 'z', 'się', 'to', 'co', 'jak', 'czy', 'że', 'nie', 'o', 'za'}
-        
-        for title in titles:
-            for word in title.lower().split():
-                word = re.sub(r'[^\w]', '', word)
-                if len(word) > 3 and word not in stopwords:
-                    words[word] = words.get(word, 0) + 1
-        
+
+        # Połącz wszystkie tytuły i wyciągnij słowa jednym regex
+        all_text = ' '.join(titles).lower()
+        for word in re.findall(r'\w+', all_text):
+            if len(word) > 3 and word not in stopwords:
+                words[word] = words.get(word, 0) + 1
+
         return sorted(words.keys(), key=lambda x: words[x], reverse=True)[:30]
     
     def generate(self, topic: str, n: int = 10, use_ai: bool = True) -> List[Dict]:
@@ -537,7 +537,7 @@ class CompetitorAnalyzer:
             
             number = float(re.sub(r'[^\d.]', '', text) or 0)
             return int(number * multiplier)
-        except:
+        except (ValueError, TypeError):
             return 0
 
 

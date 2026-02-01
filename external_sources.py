@@ -52,16 +52,19 @@ class WikipediaAPI:
                 data = resp.json()
                 views = [item['views'] for item in data.get('items', [])]
                 
-                if views:
+                if views and len(views) > 0:
                     result['article_exists'] = True
                     result['total_pageviews_30d'] = sum(views)
                     result['avg_daily_views'] = sum(views) // len(views)
-                    
-                    # Peak
+
+                    # Peak - bezpieczne znajdowanie maksimum
                     max_views = max(views)
-                    max_idx = views.index(max_views)
-                    if data.get('items'):
-                        result['peak_date'] = data['items'][max_idx].get('timestamp', '')[:8]
+                    try:
+                        max_idx = views.index(max_views)
+                        if data.get('items') and max_idx < len(data['items']):
+                            result['peak_date'] = data['items'][max_idx].get('timestamp', '')[:8]
+                    except (ValueError, IndexError):
+                        pass  # Nie udało się znaleźć peak date
                     
                     # Trend
                     if len(views) >= 7:
@@ -120,9 +123,9 @@ class WikipediaAPI:
                         'description': descriptions[i] if i < len(descriptions) else '',
                         'url': urls[i] if i < len(urls) else '',
                     })
-        except:
-            pass
-        
+        except Exception as e:
+            print(f"⚠ Błąd wyszukiwania Wikipedia: {e}")
+
         return results
 
 
