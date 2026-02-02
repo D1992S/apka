@@ -1114,7 +1114,9 @@ with st.sidebar:
             help="Twój klucz OpenAI API",
             key="openai_api_key_input",
         )
-        openai_model = st.text_input(
+        openai_model = config.get("openai_model", "auto")
+        openai_models = ["auto"] + _get_openai_model_list(openai_api_key)
+        openai_selected = st.selectbox(
             "Model OpenAI",
             value=config.get("openai_model", "auto"),
             key="openai_model_input",
@@ -1180,7 +1182,9 @@ with st.sidebar:
             help="Twój klucz Google AI Studio (Gemini)",
             key="google_ai_key_input",
         )
-        google_model = st.text_input(
+        google_model = config.get("google_model", "auto")
+        google_models = ["auto"] + _get_google_model_list(google_api_key)
+        google_selected = st.selectbox(
             "Model Gemini",
             value=config.get("google_model", "auto"),
             key="google_model_input",
