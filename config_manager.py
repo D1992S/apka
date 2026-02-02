@@ -34,6 +34,27 @@ def ensure_config_dir():
     CONFIG_DIR.mkdir(exist_ok=True)
 
 
+def _safe_load_json(path: Path, default: Any, label: str):
+    """Bezpieczne ładowanie JSON z automatycznym backupem uszkodzonych plików."""
+    if not path.exists():
+        return default
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except (IOError, json.JSONDecodeError) as e:
+        timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        backup = path.with_suffix(f".corrupt-{timestamp}.json")
+        try:
+            path.rename(backup)
+            print(
+                f"⚠ Nie udało się wczytać {label}: {e}. "
+                f"Plik przeniesiono do {backup.name}."
+            )
+        except OSError:
+            print(f"⚠ Nie udało się wczytać {label}: {e}.")
+        return default
+
+
 # =============================================================================
 # KONFIGURACJA APLIKACJI
 # =============================================================================
@@ -64,24 +85,56 @@ class AppConfig:
     def __init__(self):
         ensure_config_dir()
         self.config = self._load()
-    
+
+    def _normalize_config(self, saved: Dict) -> Dict:
+        """Ujednolica konfigurację i naprawia nieprawidłowe typy."""
+        normalized = {**self.DEFAULT_CONFIG, **saved}
+        type_expectations = {
+            "openai_api_key": str,
+            "google_ai_api_key": str,
+            "openai_enabled": bool,
+            "google_enabled": bool,
+            "niche_keywords": list,
+            "youtube_credentials_path": str,
+            "youtube_api_key": str,
+            "auto_sync_on_start": bool,
+            "dark_mode": bool,
+            "default_judges": int,
+            "default_topn": int,
+            "default_optimize_variants": bool,
+            "channel_id": str,
+            "llm_provider": str,
+            "openai_model": str,
+            "google_model": str,
+        }
+        for key, expected_type in type_expectations.items():
+            value = normalized.get(key)
+            if value is None:
+                continue
+            if not isinstance(value, expected_type):
+                print(
+                    f"⚠ Nieprawidłowy typ dla '{key}': "
+                    f"{type(value).__name__}, przywracam domyślną wartość."
+                )
+                normalized[key] = self.DEFAULT_CONFIG.get(key)
+        return normalized
+
     def _load(self) -> Dict:
         """Ładuje konfigurację z pliku"""
-        if CONFIG_FILE.exists():
-            try:
-                with open(CONFIG_FILE, "r", encoding="utf-8") as f:
-                    saved = json.load(f)
-                    # Merge z defaults (dla nowych kluczy)
-                    return {**self.DEFAULT_CONFIG, **saved}
-            except (IOError, json.JSONDecodeError) as e:
-                print(f"⚠ Nie udało się wczytać config.json: {e}. Używam domyślnych ustawień.")
+        saved = _safe_load_json(CONFIG_FILE, {}, "config.json")
+        if isinstance(saved, dict):
+            return self._normalize_config(saved)
+        print("⚠ config.json ma nieprawidłowy format. Używam domyślnych ustawień.")
         return self.DEFAULT_CONFIG.copy()
     
     def save(self):
         """Zapisuje konfigurację do pliku"""
         ensure_config_dir()
-        with open(CONFIG_FILE, "w", encoding="utf-8") as f:
-            json.dump(self.config, f, indent=2, ensure_ascii=False)
+        try:
+            with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+                json.dump(self.config, f, indent=2, ensure_ascii=False)
+        except OSError as e:
+            print(f"⚠ Nie udało się zapisać config.json: {e}")
     
     def get(self, key: str, default=None):
         """Pobiera wartość konfiguracji"""
@@ -130,19 +183,20 @@ class EvaluationHistory:
     
     def _load(self) -> List[Dict]:
         """Ładuje historię z pliku"""
-        if HISTORY_FILE.exists():
-            try:
-                with open(HISTORY_FILE, "r", encoding="utf-8") as f:
-                    return json.load(f)
-            except (IOError, json.JSONDecodeError) as e:
-                print(f"⚠ Nie udało się wczytać historii: {e}")
+        data = _safe_load_json(HISTORY_FILE, [], "evaluation_history.json")
+        if isinstance(data, list):
+            return data
+        print("⚠ evaluation_history.json ma nieprawidłowy format. Używam pustej historii.")
         return []
     
     def save(self):
         """Zapisuje historię do pliku"""
         ensure_config_dir()
-        with open(HISTORY_FILE, "w", encoding="utf-8") as f:
-            json.dump(self.history, f, indent=2, ensure_ascii=False, default=str)
+        try:
+            with open(HISTORY_FILE, "w", encoding="utf-8") as f:
+                json.dump(self.history, f, indent=2, ensure_ascii=False, default=str)
+        except OSError as e:
+            print(f"⚠ Nie udało się zapisać historii: {e}")
     
     def add(self, evaluation: Dict):
         """Dodaje ocenę do historii"""

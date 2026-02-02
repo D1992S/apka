@@ -45,6 +45,12 @@
 
 ## 🚀 Szybki start
 
+### Checklist (2 min)
+1. **Zainstaluj zależności** (`pip install -r requirements.txt`)
+2. **Uruchom aplikację** (`streamlit run app.py`)
+3. **Dodaj OpenAI API key** w panelu bocznym i kliknij **Zapisz klucz**
+4. **Załaduj dane kanału** (CSV) albo użyj **YouTube Sync**
+
 ### Windows
 ```batch
 # Kliknij dwukrotnie:
@@ -187,6 +193,14 @@ Jeśli chcesz używać automatycznej synchronizacji:
 
 ## 🐛 Troubleshooting
 
+### Aplikacja się nie uruchamia
+1. Sprawdź wersję Pythona: `python --version` (zalecane >= 3.10)
+2. Upewnij się, że instalujesz zależności w tym samym środowisku, w którym uruchamiasz `streamlit run app.py`
+
+### Brak danych / puste wykresy
+- Sprawdź czy CSV ma **kolumny `title` i `views`**
+- Upewnij się, że wartości w `views` są liczbami
+
 ### "proxies" error
 ```bash
 pip install httpx==0.24.1
@@ -205,6 +219,7 @@ pip install -r requirements.txt --upgrade
 ### API key nie działa
 - Sprawdź czy klucz jest poprawny
 - Sprawdź czy masz kredyty na koncie OpenAI
+- Jeśli używasz Google AI Studio, upewnij się, że klucz jest zapisany w polu Google API key
 
 ---
 

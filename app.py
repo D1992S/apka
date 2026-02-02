@@ -112,8 +112,8 @@ st.markdown("""
 
 /* Layout helpers */
 .section-card {
-    background: #141414;
-    border: 1px solid #2a2a2a;
+    background: #161616;
+    border: 1px solid #333;
     border-radius: 12px;
     padding: 16px;
     margin-bottom: 12px;
@@ -124,8 +124,8 @@ st.markdown("""
 
 /* Cards */
 .metric-card {
-    background: var(--background-secondary, #1e1e1e);
-    border: 1px solid var(--border-color, #333);
+    background: var(--background-secondary, #1f1f1f);
+    border: 1px solid var(--border-color, #3a3a3a);
     border-radius: 10px;
     padding: 1rem;
     margin: 0.5rem 0;
@@ -148,8 +148,12 @@ st.markdown("""
 /* Tooltips */
 .tooltip-icon {
     cursor: help;
-    opacity: 0.7;
-    margin-left: 5px;
+    opacity: 0.8;
+    margin-left: 6px;
+    font-size: 0.95em;
+    display: inline-flex;
+    align-items: center;
+    transition: opacity 0.2s ease;
 }
 .tooltip-icon:hover {
     opacity: 1;
@@ -182,7 +186,7 @@ st.markdown("""
 
 /* Info boxes */
 .info-box {
-    background: rgba(100, 149, 237, 0.1);
+    background: rgba(100, 149, 237, 0.14);
     border-left: 4px solid #6495ED;
     padding: 1rem;
     border-radius: 0 8px 8px 0;
@@ -191,7 +195,7 @@ st.markdown("""
 
 /* Warning boxes */
 .warning-box {
-    background: rgba(255, 193, 7, 0.1);
+    background: rgba(255, 193, 7, 0.14);
     border-left: 4px solid #FFC107;
     padding: 1rem;
     border-radius: 0 8px 8px 0;
@@ -200,7 +204,7 @@ st.markdown("""
 
 /* Success boxes */
 .success-box {
-    background: rgba(40, 167, 69, 0.1);
+    background: rgba(40, 167, 69, 0.14);
     border-left: 4px solid #28a745;
     padding: 1rem;
     border-radius: 0 8px 8px 0;
@@ -3696,6 +3700,7 @@ with tab_data:
     
     # Manual CSV upload
     st.subheader("📤 Ręczny upload CSV")
+    st.caption("Wymagane kolumny: `title`, `views`.")
     
     uploaded_files = st.file_uploader(
         "Przeciągnij pliki CSV",
@@ -3706,12 +3711,21 @@ with tab_data:
     if uploaded_files:
         validations = []
         for file in uploaded_files:
-            df = pd.read_csv(file)
+            try:
+                df = pd.read_csv(file)
+            except Exception as e:
+                st.error(f"Nie udało się wczytać pliku {file.name}: {e}")
+                validations.append({"missing_required": ["title", "views"], "missing_recommended": [], "warnings": []})
+                continue
             st.write(f"**{file.name}**: {len(df)} wierszy, kolumny: {', '.join(df.columns[:5])}")
             issues = validate_channel_dataframe(df)
             validations.append(issues)
             if issues["missing_required"]:
-                st.error(f"Brak wymaganych kolumn: {', '.join(issues['missing_required'])}")
+                st.error(
+                    "Brak wymaganych kolumn: "
+                    f"{', '.join(issues['missing_required'])}. "
+                    "CSV musi zawierać `title` i `views`."
+                )
             if issues["missing_recommended"]:
                 st.warning(f"Brak rekomendowanych kolumn: {', '.join(issues['missing_recommended'])}")
             for warning in issues["warnings"]:
@@ -3748,7 +3762,11 @@ with tab_data:
     if merged_df is not None:
         issues = validate_channel_dataframe(merged_df)
         if issues["missing_required"]:
-            st.error(f"Brak wymaganych kolumn: {', '.join(issues['missing_required'])}")
+            st.error(
+                "Brak wymaganych kolumn: "
+                f"{', '.join(issues['missing_required'])}. "
+                "CSV musi zawierać `title` i `views`."
+            )
         if issues["missing_recommended"]:
             st.warning(f"Brak rekomendowanych kolumn: {', '.join(issues['missing_recommended'])}")
         for warning in issues["warnings"]:
