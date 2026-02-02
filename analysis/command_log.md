@@ -9,3 +9,5 @@ Commands executed to answer the question:
 - `sed -n '1,200p' app.py`
 - `sed -n '1,200p' config_manager.py`
 - `python - <<'PY' ... PY` (line count script; output stored in `analysis/line_count.txt`)
+
+- `git status -sb`
