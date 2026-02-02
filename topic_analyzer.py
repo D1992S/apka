@@ -158,10 +158,11 @@ class TitleGenerator:
             for template in templates[:2]:  # 2 z każdego stylu
                 title = template.format(topic=topic)
                 score, reasoning = self._score_title(title)
+                reasoning_text = " | ".join(reasoning) if reasoning else "Brak szczególnych cech"
                 titles.append({
                     'title': title,
                     'score': score,
-                    'reasoning': reasoning,
+                    'reasoning': reasoning_text,
                     'style': style,
                     'source': 'template',
                 })
@@ -176,7 +177,7 @@ class TitleGenerator:
         
         return titles[:n]
     
-    def _score_title(self, title: str) -> Tuple[int, str]:
+    def _score_title(self, title: str) -> Tuple[int, List[str]]:
         """
         Ocenia tytuł i zwraca (score, reasoning).
         """
@@ -280,7 +281,7 @@ class TitleGenerator:
         # Clamp score
         score = max(0, min(100, int(score)))
         
-        return score, ' | '.join(reasons) if reasons else 'Brak szczególnych cech'
+        return score, reasons
     
     def _generate_ai(self, topic: str, n: int) -> List[Dict]:
         """Generuje tytuły przez AI"""
@@ -330,10 +331,15 @@ Odpowiedz TYLKO w formacie JSON:
                 t['source'] = 'ai'
                 # Recalculate score with our logic
                 calculated_score, calculated_reasoning = self._score_title(t['title'])
+                calculated_reasoning_text = (
+                    " | ".join(calculated_reasoning)
+                    if calculated_reasoning
+                    else "Brak szczególnych cech"
+                )
                 t['calculated_score'] = calculated_score
                 # Use max of AI score and calculated score
                 t['score'] = max(t.get('score', 0), calculated_score)
-                t['reasoning'] = f"{t.get('reasoning', '')} | {calculated_reasoning}"
+                t['reasoning'] = f"{t.get('reasoning', '')} | {calculated_reasoning_text}"
             
             return titles
             
