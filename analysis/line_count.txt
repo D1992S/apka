@@ -1,0 +1,10 @@
+PY files: 8
+Total lines: 10580
+advanced_analytics.py 2279
+app.py 3921
+competitor_tracker.py 143
+config_manager.py 781
+external_sources.py 476
+topic_analyzer.py 973
+youtube_sync.py 852
+yt_idea_evaluator_pro_v2.py 1155
