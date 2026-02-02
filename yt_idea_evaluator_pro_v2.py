@@ -28,38 +28,51 @@ from pydantic import BaseModel, Field
 # KONFIGURACJA
 # =============================================================================
 
+def _load_scoring_config() -> Dict[str, Any]:
+    """Ładuje konfigurację scoringu z config.json (jeśli dostępna)."""
+    try:
+        from config_manager import AppConfig
+        cfg = AppConfig()
+        return cfg.get("scoring", {})
+    except Exception:
+        return {}
+
+
 class Config:
     """Centralna konfiguracja narzędzia v2"""
-    
+
     # Modele OpenAI
     EMB_MODEL = os.getenv("EMB_MODEL", "text-embedding-3-large")
     JUDGE_MODELS = [
         os.getenv("JUDGE_MODEL", "gpt-4o"),
         "gpt-4o-mini"  # fallback
     ]
-    
+
     # Ścieżki
     CACHE_DIR = "./emb_cache"
     DATA_DIR = "./data"
-    
-    # Progi decyzyjne (kalibrowane)
-    THRESHOLD_PASS = 68
-    THRESHOLD_BORDER = 52
-    
-    # Wagi scoringu v2
-    WEIGHT_DATA = 0.30      # Waga modelu klasyfikacji (PASS/FAIL)
-    WEIGHT_METRICS = 0.25   # NOWE: Waga modeli regresji (views/retention)
-    WEIGHT_LLM = 0.45       # Waga oceny LLM
-    
+
+    # Ładuj konfigurację scoringu z pliku (lub użyj defaults)
+    _scoring = _load_scoring_config()
+
+    # Progi decyzyjne (konfigurowalne w config.json -> scoring)
+    THRESHOLD_PASS = _scoring.get("threshold_pass", 68)
+    THRESHOLD_BORDER = _scoring.get("threshold_border", 52)
+
+    # Wagi scoringu v2 (konfigurowalne)
+    WEIGHT_DATA = _scoring.get("weight_data", 0.30)      # Waga modelu klasyfikacji
+    WEIGHT_METRICS = _scoring.get("weight_metrics", 0.25)  # Waga modeli regresji
+    WEIGHT_LLM = _scoring.get("weight_llm", 0.45)        # Waga oceny LLM
+
     # Parametry retrievalu
     DEFAULT_TOPN = 5
     DEFAULT_N_JUDGES = 2
-    
-    # Auto-labeling thresholds (jeśli brak labelek)
-    AUTO_VIEWS_PASS = 50000
-    AUTO_VIEWS_FAIL = 15000
-    AUTO_RETENTION_PASS = 45.0
-    AUTO_RETENTION_FAIL = 25.0
+
+    # Auto-labeling thresholds (konfigurowalne)
+    AUTO_VIEWS_PASS = _scoring.get("auto_views_pass", 50000)
+    AUTO_VIEWS_FAIL = _scoring.get("auto_views_fail", 15000)
+    AUTO_RETENTION_PASS = _scoring.get("auto_retention_pass", 45.0)
+    AUTO_RETENTION_FAIL = _scoring.get("auto_retention_fail", 25.0)
 
 
 # =============================================================================
