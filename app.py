@@ -576,30 +576,6 @@ def _build_prompt_from_messages(messages: List[Dict[str, str]]) -> str:
         prompt_parts.append(f"{role}:\n{content}")
     return "\n\n".join(prompt_parts).strip()
 
-@st.cache_data(ttl=3600, show_spinner=False)
-def _get_openai_model_list(api_key: str) -> List[str]:
-    if not api_key:
-        return []
-    try:
-        from openai import OpenAI
-        client = OpenAI(api_key=api_key)
-        models = client.models.list()
-        ids = {model.id for model in models.data}
-        return sorted(ids)
-    except Exception:
-        return []
-
-
-@st.cache_data(ttl=3600, show_spinner=False)
-def _get_google_model_list(api_key: str) -> List[str]:
-    if not api_key or not GOOGLE_GENAI_AVAILABLE:
-        return []
-    try:
-        genai.configure(api_key=api_key)
-        return sorted({model.name.replace("models/", "") for model in genai.list_models()})
-    except Exception:
-        return []
-
 def _resolve_openai_model(api_key: str, requested: str) -> str:
     requested = (requested or "").strip()
     if requested and requested.lower() not in {"auto", "latest"}:
@@ -618,14 +594,6 @@ def _resolve_openai_model(api_key: str, requested: str) -> str:
         from openai import OpenAI
         client = OpenAI(api_key=api_key)
         models = client.models.list()
-        preferred_prefixes = ("gpt-4o", "gpt-4.1", "gpt-4-turbo", "gpt-4")
-        preferred = [
-            model for model in models.data
-            if model.id.startswith(preferred_prefixes)
-        ]
-        if preferred:
-            preferred.sort(key=lambda model: getattr(model, "created", 0), reverse=True)
-            return preferred[0].id
         available = {model.id for model in models.data}
         for candidate in fallback_order:
             if candidate in available:
@@ -1150,18 +1118,12 @@ with st.sidebar:
         openai_models = ["auto"] + _get_openai_model_list(openai_api_key)
         openai_selected = st.selectbox(
             "Model OpenAI",
-            options=openai_models or ["auto"],
-            index=openai_models.index(openai_model) if openai_model in openai_models else 0,
-            key="openai_model_select",
-            help="Modele są pobierane przy starcie aplikacji.",
+            value=config.get("openai_model", "auto"),
+            key="openai_model_input",
+            help="Wpisz nazwę modelu lub użyj 'auto' aby dobrać najnowszy dostępny."
         )
-        if openai_selected != config.get("openai_model", "auto"):
-            config.set("openai_model", openai_selected)
-        openai_active_model = _resolve_openai_model(openai_api_key, openai_selected)
-        if openai_active_model == openai_selected or openai_selected == "auto":
-            st.caption(f"🟢 Aktywny model: {openai_active_model}")
-        else:
-            st.caption(f"🟡 Aktywny model: {openai_active_model}")
+        if openai_model != config.get("openai_model", "auto"):
+            config.set("openai_model", openai_model)
         if openai_api_key != saved_openai_key:
             if st.button("💾 Zapisz klucz OpenAI", key="save_openai"):
                 config.set_api_key(openai_api_key)
@@ -1224,18 +1186,12 @@ with st.sidebar:
         google_models = ["auto"] + _get_google_model_list(google_api_key)
         google_selected = st.selectbox(
             "Model Gemini",
-            options=google_models or ["auto"],
-            index=google_models.index(google_model) if google_model in google_models else 0,
-            key="google_model_select",
-            help="Modele są pobierane przy starcie aplikacji.",
+            value=config.get("google_model", "auto"),
+            key="google_model_input",
+            help="Wpisz nazwę modelu lub użyj 'auto' aby dobrać najnowszy dostępny."
         )
-        if google_selected != config.get("google_model", "auto"):
-            config.set("google_model", google_selected)
-        google_active_model = _resolve_google_model(google_api_key, google_selected)
-        if google_active_model == google_selected or google_selected == "auto":
-            st.caption(f"🟢 Aktywny model: {google_active_model}")
-        else:
-            st.caption(f"🟡 Aktywny model: {google_active_model}")
+        if google_model != config.get("google_model", "auto"):
+            config.set("google_model", google_model)
         if google_api_key != saved_google_key:
             if st.button("💾 Zapisz klucz Google", key="save_google"):
                 config.set_google_api_key(google_api_key)
