@@ -35,6 +35,7 @@ except ImportError:
 
 # Ścieżki
 CONFIG_DIR = Path("./app_data")
+API_CREDENTIALS_DIR = Path("./api")
 CREDENTIALS_FILE = CONFIG_DIR / "youtube_credentials.json"
 TOKEN_FILE = CONFIG_DIR / "youtube_token.pickle"
 CHANNEL_DATA_DIR = Path("./channel_data")
@@ -65,7 +66,38 @@ class YouTubeSync:
     
     def has_credentials(self) -> bool:
         """Sprawdza czy plik credentials istnieje"""
-        return CREDENTIALS_FILE.exists()
+        return any(path.exists() for path in self._credential_candidates())
+
+    def _credential_candidates(self) -> List[Path]:
+        return [
+            CREDENTIALS_FILE,
+            API_CREDENTIALS_DIR / "youtube_credentials.json",
+        ]
+
+    def _token_candidates(self, prefer_api: bool) -> List[Path]:
+        if prefer_api:
+            return [
+                API_CREDENTIALS_DIR / "youtube_token.pickle",
+                TOKEN_FILE,
+            ]
+        return [
+            TOKEN_FILE,
+            API_CREDENTIALS_DIR / "youtube_token.pickle",
+        ]
+
+    def resolve_credentials_file(self) -> Tuple[Path, Path]:
+        """Zwraca ścieżki do credentials i tokenu."""
+        for path in self._credential_candidates():
+            if path.exists():
+                prefer_api = path.parent == API_CREDENTIALS_DIR
+                return path, self._token_candidates(prefer_api)[0]
+        return CREDENTIALS_FILE, TOKEN_FILE
+
+    def get_credentials_source(self) -> Optional[str]:
+        credentials_path, _ = self.resolve_credentials_file()
+        if credentials_path.exists():
+            return str(credentials_path)
+        return None
     
     def is_authenticated(self) -> bool:
         """Sprawdza czy jesteśmy zalogowani"""
@@ -112,7 +144,7 @@ class YouTubeSync:
 4. Pobierz JSON i zapisz jako `youtube_credentials.json`
 
 ### Krok 3: Wgraj plik
-1. Skopiuj `youtube_credentials.json` do folderu `app_data/`
+1. Skopiuj `youtube_credentials.json` do folderu `app_data/` lub `api/`
 2. Kliknij "Zaloguj do YouTube" w aplikacji
 3. Zaloguj się przez przeglądarkę
 
@@ -132,15 +164,24 @@ class YouTubeSync:
         if not GOOGLE_API_AVAILABLE:
             return False, "Zainstaluj biblioteki: pip install google-api-python-client google-auth-oauthlib"
         
-        if not CREDENTIALS_FILE.exists():
-            return False, f"Brak pliku credentials. Umieść youtube_credentials.json w folderze {CONFIG_DIR}"
+        credentials_file, token_file = self.resolve_credentials_file()
+        if not credentials_file.exists():
+            return False, (
+                "Brak pliku credentials. Umieść youtube_credentials.json w folderze "
+                f"{CONFIG_DIR} lub {API_CREDENTIALS_DIR}"
+            )
         
         creds = None
         
         # Sprawdź zapisany token
-        if TOKEN_FILE.exists():
+        token_candidates = self._token_candidates(credentials_file.parent == API_CREDENTIALS_DIR)
+        for candidate in token_candidates:
+            if candidate.exists():
+                token_file = candidate
+                break
+        if token_file.exists():
             try:
-                with open(TOKEN_FILE, 'rb') as token:
+                with open(token_file, 'rb') as token:
                     creds = pickle.load(token)
             except (IOError, pickle.PickleError) as e:
                 print(f"⚠ Nie udało się wczytać tokenu YouTube: {e}")
@@ -156,15 +197,15 @@ class YouTubeSync:
             if not creds:
                 try:
                     flow = InstalledAppFlow.from_client_secrets_file(
-                        str(CREDENTIALS_FILE), SCOPES
+                        str(credentials_file), SCOPES
                     )
                     creds = flow.run_local_server(port=0)
                 except Exception as e:
                     return False, f"Błąd autoryzacji: {e}"
             
             # Zapisz token
-            CONFIG_DIR.mkdir(exist_ok=True)
-            with open(TOKEN_FILE, 'wb') as token:
+            token_file.parent.mkdir(exist_ok=True)
+            with open(token_file, 'wb') as token:
                 pickle.dump(creds, token)
         
         self.credentials = creds
