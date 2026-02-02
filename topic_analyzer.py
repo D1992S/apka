@@ -71,6 +71,15 @@ class TitleGenerator:
             "10 minut które zmieniły historię: {topic}",
         ],
     }
+
+    POWER_WORDS = [
+        'zginęli', 'zginęła', 'zginął', 'zakazane', 'zakazany', 'dowód', 'kłamstwo',
+        'nagranie', 'prawda', 'sekret', 'afera', 'zbrodnia', 'katastrofa', 'tragedia'
+    ]
+    FILLER_WORDS = [
+        'tajemnicze', 'mroczne', 'szok', 'niewyjaśnione', 'sensacyjne', 'niesamowite'
+    ]
+    QUESTION_FILLERS = ["o co", "czy to", "jak to"]
     
     def __init__(self, openai_client=None, channel_data: pd.DataFrame = None):
         self.client = openai_client
@@ -164,57 +173,95 @@ class TitleGenerator:
         """
         Ocenia tytuł i zwraca (score, reasoning).
         """
-        score = 50
+        score = 50.0
         reasons = []
+        text = title.lower()
+        words = text.split()
         
-        # === Długość ===
+        # === 1. Długość (funkcja dzwonowa) ===
         length = len(title)
+        dist_from_ideal = abs(length - 52)
         if 40 <= length <= 65:
-            score += 10
-            reasons.append("✅ Optymalna długość (40-65 znaków)")
-        elif length > 70:
-            score -= 10
-            reasons.append("⚠️ Za długi tytuł (>70 znaków)")
-        elif length < 30:
-            score -= 5
-            reasons.append("⚠️ Za krótki tytuł (<30 znaków)")
+            score += 10 - (0.4 * dist_from_ideal)
+            reasons.append("✅ Dobra długość względem ideału (52 znaki)")
+        elif 30 <= length < 40 or 66 <= length <= 75:
+            score += 2 - (0.5 * dist_from_ideal)
+            reasons.append("⚠️ Długość poza optimum (szybki spadek)")
+        else:
+            score -= 5 + (0.5 * dist_from_ideal)
+            reasons.append("❌ Skrajna długość tytułu")
         
-        # === Liczba ===
-        if re.search(r'\d', title):
+        # === 2. Liczby z kontekstem ===
+        context_num_pattern = r'\d+[\s\.\-]*(min|h|godz|lat|osób|ofiar|dni|ciała|km|mln|tys)'
+        date_year_pattern = r'(19|20)\d{2}'
+        if re.search(context_num_pattern, text) or re.search(date_year_pattern, text):
             score += 10
-            reasons.append("✅ Zawiera liczbę (konkretność)")
+            reasons.append("✅ Liczba z kontekstem (czas/osoby/data)")
+        elif re.search(r'\d+', text):
+            score += 3
+            reasons.append("✅ Liczba bez kontekstu")
         
-        # === Pytanie ===
+        # === 3. Pytajnik (quality check) ===
         if '?' in title:
-            score += 8
-            reasons.append("✅ Pytanie (buduje ciekawość)")
+            if len(words) < 8 and not any(x in text for x in self.QUESTION_FILLERS):
+                score += 5
+                reasons.append("✅ Konkretne pytanie")
+            else:
+                score += 2
+                reasons.append("⚠️ Generyczne pytanie")
         
-        # === Emocjonalne słowa ===
-        emotional_words = [
-            'szok', 'przerażając', 'niesamowit', 'tajemnic', 'prawda', 
-            'tragedi', 'śmierć', 'zgin', 'mroczn', 'ukryt', 'sekret',
-            'wstrząs', 'scandal', 'afera', 'zbrodnia', 'morder'
-        ]
-        found_emotional = [w for w in emotional_words if w in title.lower()]
-        if found_emotional:
-            bonus = min(15, len(found_emotional) * 5)
-            score += bonus
-            reasons.append(f"✅ Emocje: {', '.join(found_emotional[:3])}")
+        # === 4. Power words & filler (malejące korzyści) ===
+        power_hits = sum(1 for w in self.POWER_WORDS if w in text)
+        filler_hits = sum(1 for w in self.FILLER_WORDS if w in text)
+        if power_hits:
+            score += min(10, power_hits * 5)
+            reasons.append("✅ Mocne słowa-klucze")
+        if filler_hits:
+            score += min(4, filler_hits * 2)
+            reasons.append("🟡 Słowa wypełniacze")
+        if (power_hits + filler_hits) > 4:
+            score -= 5
+            reasons.append("⚠️ Nadmiar słów-kluczy (spam)")
         
-        # === CAPS ===
-        if re.search(r'\b[A-Z]{2,}\b', title):
-            score += 5
-            reasons.append("✅ CAPS (zwraca uwagę)")
+        # === 5. Interpunkcja i CAPS ===
+        caps_words = [w for w in title.split() if w.isupper() and len(w) > 1]
+        bad_caps = [w for w in caps_words if len(w) > 4]
+        if bad_caps:
+            score -= 6
+            reasons.append("❌ Krzykliwy CAPS")
+        elif caps_words:
+            score += 2
+            reasons.append("✅ Krótki CAPS (np. UFO)")
         
-        # === Dwukropek (struktura) ===
         if ':' in title:
-            score += 5
-            reasons.append("✅ Struktura z dwukropkiem")
+            score -= 2
+            reasons.append("⚠️ Dwukropek zabiera miejsce")
         
-        # === DNA kanału ===
+        # === 6. Anti-clickbait & anti-school ===
+        if re.search(r'\bszok\w*\b', text):
+            score -= 12
+            reasons.append("❌ Clickbaitowe 'szok'")
+        school_pattern = r'^(historia|tajemnica|sekret|opowieść|prawda o|wszystko o)'
+        if re.search(school_pattern, text):
+            score -= 15
+            reasons.append("❌ Szkolny szablon tytułu")
+        
+        # === 7. Klarowność ===
+        if len(words) > 12:
+            score -= 5
+            reasons.append("⚠️ Za dużo słów")
+        if title.count(',') >= 2:
+            score -= 3
+            reasons.append("⚠️ Za dużo przecinków")
+        punctuation_count = sum(1 for ch in title if ch in '!?;,.')
+        if punctuation_count > 3:
+            score -= 3
+            reasons.append("⚠️ Nadmiar interpunkcji")
+
+        # === 8. DNA kanału ===
         if self.hit_patterns:
             trigger_words = self.hit_patterns.get('trigger_words', [])
-            found_triggers = [w for w in trigger_words if w in title.lower()]
+            found_triggers = [w for w in trigger_words if w in text]
             if found_triggers:
                 bonus = min(12, len(found_triggers) * 4)
                 score += bonus
@@ -227,7 +274,7 @@ class TitleGenerator:
                 score += 3
         
         # Clamp score
-        score = max(0, min(100, score))
+        score = max(0, min(100, int(score)))
         
         return score, ' | '.join(reasons) if reasons else 'Brak szczególnych cech'
     
@@ -344,46 +391,70 @@ class PromiseGenerator:
     
     def _score_promise(self, promise: str, title: str) -> Tuple[int, str]:
         """Ocenia obietnicę"""
-        score = 50
+        score = 50.0
         reasons = []
+        text = promise.lower()
         
-        # Długość
-        if 50 <= len(promise) <= 150:
+        # 1. Długość (Narrative Window)
+        length = len(promise)
+        if 120 <= length <= 220:
             score += 10
-            reasons.append("✅ Dobra długość")
-        elif len(promise) > 200:
-            score -= 10
-            reasons.append("⚠️ Za długa")
-        elif len(promise) < 40:
-            score -= 5
-            reasons.append("⚠️ Za krótka")
-        
-        # Buduje napięcie
-        tension_words = ['ukryt', 'tajemnic', 'prawda', 'odkryj', 'zmieni', 'nigdy', 'nikt', 'sekret', 'mroczn']
-        found = [w for w in tension_words if w in promise.lower()]
-        if found:
-            bonus = min(15, len(found) * 5)
-            score += bonus
-            reasons.append(f"✅ Napięcie: {', '.join(found[:3])}")
-        
-        # Nie powtarza tytułu
-        title_words = set(w.lower() for w in title.split() if len(w) > 3)
-        promise_words = set(w.lower() for w in promise.split() if len(w) > 3)
-        overlap = len(title_words & promise_words)
-        
-        if overlap < 2:
-            score += 10
-            reasons.append("✅ Dodaje nową wartość (nie powtarza)")
-        elif overlap > 3:
-            score -= 5
-            reasons.append("⚠️ Powtarza słowa z tytułu")
-        
-        # Konkretność
-        if any(word in promise.lower() for word in ['dokument', 'dowod', 'świadek', 'relacj', 'nagran']):
+            reasons.append("✅ Filmowa długość (120-220 znaków)")
+        elif 90 <= length < 120:
             score += 5
-            reasons.append("✅ Konkretna obietnica")
+            reasons.append("🟡 Dobra długość, ale krótka")
+        elif length < 90:
+            score -= 10
+            reasons.append("❌ Za krótka na klimat")
+        elif length > 260:
+            score -= 8
+            reasons.append("⚠️ Za długa (ściana tekstu)")
         
-        return max(0, min(100, score)), ' | '.join(reasons)
+        # 2. Anti-marketing
+        marketing_triggers = ["w tym filmie", "dzisiaj", "opowiem", "przedstawię", "zobaczycie", "zapraszam"]
+        if any(x in text for x in marketing_triggers):
+            score -= 20
+            reasons.append("❌ Marketingowy zwrot")
+        
+        # 3. Test na konkret (czas/miejsce/obiekt)
+        has_time = bool(re.search(r'\d+(\:|\.)\d+|\d+\s*(lat|min|h)', text))
+        has_place = any(x in text for x in ["w lesie", "na dnie", "w domu", "pokój", "piwnic", "korytarz"])
+        has_object = any(x in text for x in ["raport", "taśm", "nagran", "zdjęci", "dowód", "ciał"])
+        if has_time or has_place or has_object:
+            score += 8
+            reasons.append("✅ Konkret (czas/miejsce/obiekt)")
+        else:
+            score -= 10
+            reasons.append("❌ Brak konkretu")
+        
+        # 4. Overlap z tytułem
+        title_words = set(self._clean_text(title).split())
+        promise_words = set(self._clean_text(promise).split())
+        common = title_words & promise_words
+        if len(common) == 0:
+            score += 5
+            reasons.append("✅ Dodaje nową wartość")
+        elif len(common) > 2:
+            score -= 10
+            reasons.append("⚠️ Powtarza tytuł")
+        
+        # 5. Struktura (in medias res)
+        if text.startswith(("nie", "nikt", "nigdy", "gdy", "kiedy")):
+            score += 5
+            reasons.append("✅ Mocny start")
+        
+        return max(0, min(100, int(score))), ' | '.join(reasons)
+
+    @staticmethod
+    def _clean_text(text: str) -> str:
+        """Czyści tekst do porównań overlapu."""
+        stopwords = {
+            'i', 'w', 'na', 'do', 'z', 'się', 'to', 'co', 'jak', 'czy', 'że', 'nie',
+            'o', 'za', 'pod', 'nad', 'przez', 'dla', 'od', 'po', 'przed', 'oraz'
+        }
+        words = re.findall(r'\w+', text.lower())
+        cleaned = [w for w in words if len(w) > 3 and w not in stopwords]
+        return " ".join(cleaned)
     
     def _generate_ai(self, title: str, topic: str, n: int) -> List[Dict]:
         """Generuje obietnice przez AI"""
@@ -466,18 +537,20 @@ class CompetitorAnalyzer:
             videos = search.result().get('result', [])
             
             result['total_videos'] = len(videos)
-            
+            parsed_videos = []
+
             for vid in videos:
                 view_text = vid.get('viewCount', {}).get('text', '0')
                 views = self._parse_views(view_text)
                 published = vid.get('publishedTime', '')
+                days_old = self._parse_days_old(published)
                 
                 # Count high-view videos
                 if views >= 50000:
                     result['high_view_videos'] += 1
                 
                 # Count recent videos
-                if any(x in published.lower() for x in ['dzień', 'dni', 'day', 'tydzień', 'tygodni', 'week', 'miesiąc', 'month']):
+                if days_old is not None and days_old < 180:
                     result['recent_videos'] += 1
                 
                 result['top_videos'].append({
@@ -487,34 +560,71 @@ class CompetitorAnalyzer:
                     'published': published,
                     'duration': vid.get('duration', ''),
                     'link': vid.get('link', ''),
+                    'days_old': days_old,
+                })
+                parsed_videos.append({
+                    'title': vid.get('title', ''),
+                    'views': views,
+                    'days_old': days_old,
                 })
             
             # Sort by views
             result['top_videos'] = sorted(result['top_videos'], key=lambda x: x['views'], reverse=True)[:10]
-            
-            # Calculate saturation and opportunity
-            high_views = result['high_view_videos']
-            recent = result['recent_videos']
-            
-            if high_views >= 5:
+
+            # Opportunity Score V3 (Demand vs Supply)
+            top_5_videos = sorted(parsed_videos, key=lambda x: x['views'], reverse=True)[:5]
+            avg_views = np.mean([v['views'] for v in top_5_videos]) if top_5_videos else 0
+
+            demand_score = 0
+            if avg_views > 200000:
+                demand_score = 100
+            elif avg_views > 100000:
+                demand_score = 80
+            elif avg_views > 50000:
+                demand_score = 60
+            elif avg_views < 10000:
+                demand_score = 10
+
+            recent_count = sum(
+                1 for v in parsed_videos[:10]
+                if v.get('days_old') is not None and v['days_old'] < 180
+            )
+
+            saturation_penalty = 0
+            if recent_count >= 4:
+                saturation_penalty = 60
+            elif recent_count >= 2:
+                saturation_penalty = 30
+            elif recent_count == 0:
+                saturation_penalty = -20
+
+            niche_penalty = 0
+            if len(parsed_videos) < 5:
+                niche_penalty = 20
+
+            opportunity = demand_score - saturation_penalty - niche_penalty
+
+            top_video = top_5_videos[0] if top_5_videos else None
+            if top_video and top_video['views'] > 150000 and (top_video.get('days_old') or 0) > 700:
+                opportunity += 25
+
+            result['opportunity_score'] = max(0, min(100, int(opportunity)))
+
+            if saturation_penalty >= 60:
                 result['saturation'] = 'HIGH'
-                result['opportunity_score'] = 25
-                result['recommendation'] = "🔴 WYSOKA konkurencja - temat mocno eksploatowany. Potrzebujesz unikalnego kąta lub świeżych informacji."
-            elif high_views >= 3:
+            elif saturation_penalty >= 30:
                 result['saturation'] = 'MEDIUM'
-                result['opportunity_score'] = 55
-                result['recommendation'] = "🟡 ŚREDNIA konkurencja - jest miejsce, ale musisz się wyróżnić."
             else:
                 result['saturation'] = 'LOW'
-                result['opportunity_score'] = 80
-                result['recommendation'] = "🟢 NISKA konkurencja - świetna okazja! Mało filmów o tym temacie."
-            
-            # Bonus if no recent videos
-            if recent == 0 and result['total_videos'] > 0:
-                result['opportunity_score'] += 15
-                result['recommendation'] += " ✨ Brak świeżych filmów - idealne okno czasowe!"
-            
-            result['opportunity_score'] = min(100, result['opportunity_score'])
+
+            if demand_score >= 80 and saturation_penalty <= 0:
+                result['recommendation'] = "🟢 Wysoki popyt i niska świeża konkurencja - idealna okazja."
+            elif demand_score >= 60 and saturation_penalty < 60:
+                result['recommendation'] = "🟡 Dobry popyt, ale rynek jest częściowo zajęty. Szukaj unikalnego kąta."
+            elif demand_score <= 10:
+                result['recommendation'] = "🔴 Słaby popyt - temat może być martwy."
+            else:
+                result['recommendation'] = "🟠 Umiarkowany popyt lub wysoka świeża konkurencja."
             
         except Exception as e:
             result['error'] = str(e)
@@ -540,35 +650,34 @@ class CompetitorAnalyzer:
         except (ValueError, TypeError):
             return 0
 
+    def _parse_days_old(self, published_text: str) -> Optional[int]:
+        """Szacuje wiek filmu w dniach na podstawie tekstu."""
+        if not published_text:
+            return None
+        text = published_text.lower()
+        match = re.search(r'(\d+)', text)
+        if not match:
+            return None
+        value = int(match.group(1))
+        if any(unit in text for unit in ['dzień', 'dni', 'day', 'days']):
+            return value
+        if any(unit in text for unit in ['tydzień', 'tygodni', 'week', 'weeks']):
+            return value * 7
+        if any(unit in text for unit in ['miesiąc', 'miesięcy', 'month', 'months']):
+            return value * 30
+        if any(unit in text for unit in ['rok', 'lata', 'lat', 'year', 'years']):
+            return value * 365
+        return None
+
 
 class ViralScorePredictor:
     """Przewiduje potencjał viralowy tematu/tytułu"""
-    
-    VIRAL_FACTORS = {
-        'emotional_intensity': {
-            'keywords': ['szok', 'niesamowit', 'niewiarygod', 'przerażając', 'wstrząsając', 'poruszając'],
-            'weight': 15,
-        },
-        'controversy': {
-            'keywords': ['skandal', 'afera', 'oszust', 'kłamst', 'ukrywa', 'cenzur', 'zakazan'],
-            'weight': 12,
-        },
-        'mystery': {
-            'keywords': ['tajemnic', 'zagadk', 'niewyjaśnion', 'zaginion', 'sekret', 'odkry'],
-            'weight': 10,
-        },
-        'tragedy': {
-            'keywords': ['tragedi', 'śmierć', 'zgin', 'ofiar', 'katastro', 'wypadek'],
-            'weight': 10,
-        },
-        'relatability': {
-            'keywords': ['polsk', 'nasz', 'twój', 'każdy'],
-            'weight': 8,
-        },
-        'urgency': {
-            'keywords': ['teraz', 'właśnie', 'pilne', 'dziś'],
-            'weight': 5,
-        },
+    AUTHORITY_WORDS = ["policja", "rząd", "fbi", "władze", "nasa"]
+    NEGATION_WORDS = ["kłam", "ukry", "błąd", "zatusz", "nie"]
+    THEMES = {
+        "tragedy": ["zginęli", "śmierć", "ofiar", "ciało"],
+        "mystery": ["zniknęli", "sygnał", "światło", "dźwięk"],
+        "forbidden": ["zakaz", "bunkier", "strefa", "tajne"],
     }
     
     def __init__(self, channel_data: pd.DataFrame = None):
@@ -598,36 +707,26 @@ class ViralScorePredictor:
         factors = []
         
         text = f"{title} {topic}".lower()
-        
-        # Check viral factors
-        for factor_name, factor_data in self.VIRAL_FACTORS.items():
-            keywords = factor_data['keywords']
-            weight = factor_data['weight']
-            
-            found = [kw for kw in keywords if kw in text]
-            if found:
-                bonus = min(weight, len(found) * (weight // 2))
-                score += bonus
+
+        has_authority = any(x in text for x in self.AUTHORITY_WORDS)
+        has_negation = any(x in text for x in self.NEGATION_WORDS)
+        if has_authority and has_negation:
+            score += 20
+            factors.append({
+                'factor': 'authority_negation',
+                'found': [w for w in self.AUTHORITY_WORDS if w in text],
+                'bonus': '+20',
+            })
+
+        for category, words in self.THEMES.items():
+            if any(w in text for w in words):
+                score += 10
                 factors.append({
-                    'factor': factor_name,
-                    'found': found,
-                    'bonus': f"+{bonus}",
+                    'factor': category,
+                    'found': [w for w in words if w in text],
+                    'bonus': '+10',
                 })
-        
-        # Competition factor
-        if competition:
-            saturation = competition.get('saturation', 'MEDIUM')
-            if saturation == 'LOW':
-                score += 15
-                factors.append({'factor': 'low_competition', 'found': ['Niska konkurencja'], 'bonus': '+15'})
-            elif saturation == 'HIGH':
-                score -= 10
-                factors.append({'factor': 'high_competition', 'found': ['Wysoka konkurencja'], 'bonus': '-10'})
-        
-        # Length factor
-        if 40 <= len(title) <= 65:
-            score += 5
-            factors.append({'factor': 'optimal_length', 'found': ['Optymalna długość'], 'bonus': '+5'})
+                break
         
         # Clamp
         score = max(0, min(100, score))
@@ -651,22 +750,19 @@ class ViralScorePredictor:
     
     def _generate_recommendation(self, score: int, factors: List[Dict]) -> str:
         """Generuje rekomendację jak zwiększyć viral score"""
-        found_factors = [f['factor'] for f in factors]
+        found_factors = {f['factor'] for f in factors}
         suggestions = []
-        
-        if 'emotional_intensity' not in found_factors:
-            suggestions.append("Dodaj emocjonalne słowa (szokujące, niesamowite)")
-        if 'mystery' not in found_factors:
-            suggestions.append("Dodaj element tajemnicy")
-        if 'controversy' not in found_factors and score < 60:
-            suggestions.append("Rozważ kontrowersyjny kąt")
-        
+
+        if 'authority_negation' not in found_factors:
+            suggestions.append("Dodaj konflikt z autorytetem (np. policja/urząd)")
+        if not any(f in found_factors for f in ['tragedy', 'mystery', 'forbidden']):
+            suggestions.append("Dodaj wyraźny motyw (tragedia/tajemnica/zakaz)")
+
         if suggestions:
             return "💡 " + " | ".join(suggestions[:2])
-        elif score >= 70:
-            return "✅ Wszystkie kluczowe elementy obecne!"
-        else:
-            return "🔍 Sprawdź konkurencję i timing"
+        if score >= 70:
+            return "✅ Temat ma wyraźne paliwo wiralowe."
+        return "🔍 Zbyt mało konfliktu lub mocnego motywu."
 
 
 class SimilarVideosFinder:
@@ -763,41 +859,81 @@ class TopicEvaluator:
         # 1. Generate titles
         result['titles'] = self.title_generator.generate(topic, n=n_titles)
         
-        if result['titles']:
-            result['selected_title'] = result['titles'][0]  # Best one
-            
-            # 2. Generate promises for best title
-            result['promises'] = self.promise_generator.generate(
-                result['selected_title']['title'],
-                topic,
-                n=n_promises
-            )
+        # 2. Generate promises (seed with top title, then evaluate combos)
+        seed_title = result['titles'][0]['title'] if result['titles'] else topic
+        result['promises'] = self.promise_generator.generate(
+            seed_title,
+            topic,
+            n=n_promises
+        )
         
-        # 3. Analyze competition
+        # 3. Find best combination (title + promise)
+        best_combination = None
+        best_combo_score = 50.0
+        
+        for title_obj in result['titles']:
+            t_score = title_obj.get('score', 50)
+            for promise_obj in result['promises']:
+                p_score, _ = self.promise_generator._score_promise(
+                    promise_obj.get('promise', ''),
+                    title_obj.get('title', '')
+                )
+                combo_score = (t_score * 0.6) + (p_score * 0.4)
+                if combo_score > best_combo_score:
+                    best_combo_score = combo_score
+                    best_combination = (title_obj, promise_obj.get('promise', ''), t_score, p_score)
+        
+        if best_combination:
+            best_title_obj, best_promise_text, t_score, _ = best_combination
+            result['selected_title'] = best_title_obj
+            result['best_title'] = best_title_obj.get('title', '')
+            result['best_promise'] = best_promise_text
+            
+            # Re-score promises for selected title and re-order
+            rescored_promises = []
+            for promise_obj in result['promises']:
+                p_score, reasoning = self.promise_generator._score_promise(
+                    promise_obj.get('promise', ''),
+                    best_title_obj.get('title', '')
+                )
+                updated = dict(promise_obj)
+                updated['score'] = p_score
+                updated['reasoning'] = reasoning
+                rescored_promises.append(updated)
+            rescored_promises = sorted(rescored_promises, key=lambda x: x['score'], reverse=True)
+            if best_promise_text:
+                for idx, item in enumerate(rescored_promises):
+                    if item.get('promise') == best_promise_text:
+                        rescored_promises.insert(0, rescored_promises.pop(idx))
+                        break
+            result['promises'] = rescored_promises
+        
+        # 4. Analyze competition
         result['competition'] = self.competitor_analyzer.analyze(topic)
         
-        # 4. Predict viral score
+        # 5. Predict viral score
         best_title = result['selected_title']['title'] if result['selected_title'] else topic
         result['viral_score'] = self.viral_predictor.predict(
             best_title, topic, result['competition']
         )
         
-        # 5. Find similar videos
+        # 6. Find similar videos
         if self.similar_finder:
             result['similar_hits'] = self.similar_finder.find(topic, best_title)
         
-        # 6. Calculate overall score
-        title_score = result['selected_title']['score'] if result['selected_title'] else 50
+        # 7. Calculate overall score (pair-based)
         competition_score = result['competition'].get('opportunity_score', 50)
         viral_score = result['viral_score'].get('viral_score', 50)
-        
-        result['overall_score'] = int(
-            title_score * 0.35 +
-            competition_score * 0.30 +
-            viral_score * 0.35
+        overall_score = int(
+            (best_combo_score * 0.55) +
+            (competition_score * 0.30) +
+            (viral_score * 0.15)
         )
+        if competition_score < 20:
+            overall_score = min(overall_score, 65)
+        result['overall_score'] = overall_score
         
-        # 7. Generate recommendation
+        # 8. Generate recommendation
         result['recommendation'] = self._generate_recommendation(result)
         
         return result
