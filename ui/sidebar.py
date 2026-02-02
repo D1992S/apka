@@ -252,6 +252,7 @@ def render_sidebar(
         last_sync = yt_sync.get_last_sync_time()
         yt_api_key = config.get_youtube_api_key()
         yt_channel_id = config.get("channel_id", "")
+        credentials_source = yt_sync.get_credentials_source()
 
         yt_api_key_input = st.text_input(
             "YouTube API Key (public)",
@@ -273,6 +274,8 @@ def render_sidebar(
 
         if last_sync:
             st.caption(f"Ostatnia sync: {last_sync}")
+        if credentials_source:
+            st.caption(f"Credentials: {credentials_source}")
 
         if not google_api_available:
             st.warning("⚠️ Zainstaluj: `pip install google-api-python-client google-auth-oauthlib`")
