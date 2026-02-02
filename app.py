@@ -451,6 +451,11 @@ MERGED_DATA_FILE = CHANNEL_DATA_DIR / "merged_channel_data.csv"
 CACHE_FILE = Path("./app_data/cache_store.json")
 SCRIPT_SYNC_DIR = Path("./script_sync")
 CACHE_VERSION = "v1"
+LOCAL_EXPORT_FILES = {
+    "table": ["dane_w_tabeli.csv", "Dane w tabeli.csv"],
+    "chart": ["dane_wykresu.csv", "Dane wykresu.csv"],
+    "summary": ["razem.csv", "Razem.csv"],
+}
 
 # =============================================================================
 # HELPER FUNCTIONS
@@ -465,7 +470,65 @@ def load_merged_data() -> Optional[pd.DataFrame]:
     
     if MERGED_DATA_FILE.exists():
         return pd.read_csv(MERGED_DATA_FILE)
+
+    local_table = _find_local_export_file("table")
+    if local_table:
+        return load_local_export_table(local_table)
     return None
+
+def _find_local_export_file(kind: str) -> Optional[Path]:
+    """Znajduje plik eksportu w katalogu głównym."""
+    candidates = LOCAL_EXPORT_FILES.get(kind, [])
+    for name in candidates:
+        path = Path(name)
+        if path.exists():
+            return path
+    return None
+
+def _normalize_numeric_series(series: pd.Series) -> pd.Series:
+    """Czyści wartości liczbowe z separatorów i zamienia na float."""
+    cleaned = (
+        series.astype(str)
+        .str.replace("\u00a0", "", regex=False)
+        .str.replace(" ", "", regex=False)
+        .str.replace(",", ".", regex=False)
+    )
+    return pd.to_numeric(cleaned, errors="coerce")
+
+def load_local_export_table(path: Path) -> pd.DataFrame:
+    """Ładuje eksport YouTube Studio (Dane w tabeli) i mapuje kolumny."""
+    df = pd.read_csv(path)
+    if "Treść" in df.columns:
+        df = df[df["Treść"].astype(str).str.strip().str.lower() != "suma"]
+
+    column_map = {
+        "Tytuł filmu": "title",
+        "Wyświetlenia": "views",
+        "Wyświetlenia zamierzone": "views",
+        "Średni procent obejrzenia (%)": "retention",
+        "Data i godzina publikacji filmu": "published_at",
+        "Treść": "video_id",
+    }
+
+    mapped = df.rename(columns=column_map).copy()
+
+    if "views" in mapped.columns:
+        mapped["views"] = _normalize_numeric_series(mapped["views"]).fillna(0)
+    if "retention" in mapped.columns:
+        mapped["retention"] = _normalize_numeric_series(mapped["retention"])
+
+    if "title" in mapped.columns:
+        mapped["title"] = mapped["title"].astype(str).str.strip()
+        mapped = mapped[mapped["title"].ne("")]
+
+    return mapped
+
+def load_local_export_series(path: Path) -> pd.DataFrame:
+    """Ładuje dane z eksportu wykresu lub razem."""
+    df = pd.read_csv(path)
+    if "Wyświetlenia zamierzone" in df.columns:
+        df["Wyświetlenia zamierzone"] = _normalize_numeric_series(df["Wyświetlenia zamierzone"])
+    return df
 
 def validate_channel_dataframe(df: pd.DataFrame) -> Dict[str, List[str]]:
     """Waliduje podstawowy format danych kanału."""
@@ -802,6 +865,20 @@ def _cache_set(namespace: str, key: str, value) -> None:
 def _make_cache_key(payload: Dict) -> str:
     raw = json.dumps(payload, sort_keys=True, ensure_ascii=False, default=str)
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+def _get_ai_insight(client, model: str, messages: List[Dict[str, str]], cache_key: str, ttl_seconds: int = 21600) -> str:
+    cached = _cache_get("ai_insights", cache_key, ttl_seconds=ttl_seconds)
+    if cached:
+        return cached
+    response = client.chat.completions.create(
+        model=model,
+        messages=messages,
+        max_tokens=500,
+        temperature=0.4,
+    )
+    content = response.choices[0].message.content.strip()
+    _cache_set("ai_insights", cache_key, content)
+    return content
 
 def log_diagnostic(message: str, level: str = "info") -> None:
     st.session_state.setdefault("diagnostics", [])
@@ -2447,13 +2524,16 @@ with tab_tools:
 
             def _fmt(i):
                 row = df_w.loc[i]
-                return f"{str(row.get('title',''))[:80]} | {int(row.get('views',0) or 0):,} views"
+                views_value = pd.to_numeric(row.get("views", 0), errors="coerce")
+                views_value = int(views_value) if pd.notna(views_value) else 0
+                return f"{str(row.get('title',''))[:80]} | {views_value:,} views"
 
             pick = st.selectbox("Film", options=opts, format_func=_fmt, key="wtopa_pick")
             if st.button("Załaduj dane filmu", key="wtopa_load_btn"):
                 row = df_w.loc[pick]
                 st.session_state["wtopa_title"] = str(row.get("title",""))
-                st.session_state["wtopa_views"] = int(row.get("views",0) or 0)
+                views_value = pd.to_numeric(row.get("views", 0), errors="coerce")
+                st.session_state["wtopa_views"] = int(views_value) if pd.notna(views_value) else 0
 
                 # heurystyka retencji (jeśli mamy)
                 ret = None
@@ -2471,6 +2551,46 @@ with tab_tools:
                     st.session_state["wtopa_ret"] = float(max(0.0, min(100.0, ret)))
 
                 st.rerun()
+
+            if api_key:
+                if st.button("🧠 AI diagnoza wybranego filmu", key="wtopa_ai_btn"):
+                    client = get_llm_client(llm_provider, api_key, llm_model)
+                    if not client:
+                        st.warning(f"Nie udało się zainicjalizować {LLM_PROVIDER_LABELS.get(llm_provider, 'LLM')}.")
+                    else:
+                        row = df_w.loc[pick]
+                        views_value = pd.to_numeric(row.get("views", 0), errors="coerce")
+                        views_value = int(views_value) if pd.notna(views_value) else 0
+                        channel_avg = float(df_w["views"].mean()) if "views" in df_w.columns else None
+                        channel_median = float(df_w["views"].median()) if "views" in df_w.columns else None
+                        prompt = (
+                            "Przeanalizuj dlaczego film mógł wypaść słabo i podaj 3-5 konkretnych zaleceń poprawy.\n"
+                            "Dane filmu i kanału:\n"
+                            f"Tytuł: {row.get('title','')}\n"
+                            f"Wyświetlenia filmu: {views_value}\n"
+                            f"Średnia kanału: {channel_avg}\n"
+                            f"Mediana kanału: {channel_median}\n"
+                            f"Retencja: {row.get('retention', '')}\n"
+                            "Odpowiedz w punktach i nie powtarzaj liczb dosłownie."
+                        )
+                        cache_key = _make_cache_key({
+                            "type": "wtopa_insight",
+                            "title": str(row.get("title", "")),
+                            "views": views_value,
+                        })
+                        insight = _get_ai_insight(
+                            client,
+                            llm_model,
+                            messages=[
+                                {"role": "system", "content": "Jesteś analitykiem YouTube specjalizującym się w diagnozowaniu słabych wyników."},
+                                {"role": "user", "content": prompt},
+                            ],
+                            cache_key=cache_key,
+                            ttl_seconds=get_cache_ttl("llm_insights", 21600),
+                        )
+                        st.markdown(insight)
+            else:
+                st.caption(f"Dodaj API Key ({LLM_PROVIDER_LABELS.get(llm_provider, 'LLM')}), aby uruchomić AI diagnozę.")
 
             st.divider()
 
@@ -3188,6 +3308,44 @@ Bez komentarzy i bez markdown.
                     st.metric("Prognoza total views", f"{projected_next_total:,.0f}")
 
                 st.caption("Prognoza bazuje na średniej z ostatnich publikacji i zakładanej liczbie filmów w miesiącu.")
+
+            st.divider()
+
+            st.subheader("🧠 AI Insights")
+            if not api_key:
+                st.info(f"Dodaj API Key ({LLM_PROVIDER_LABELS.get(llm_provider, 'LLM')}), aby wygenerować AI Insights.")
+            else:
+                if st.button("✨ Generuj AI Insights", use_container_width=True):
+                    client = get_llm_client(llm_provider, api_key, llm_model)
+                    if not client:
+                        st.warning(f"Nie udało się zainicjalizować {LLM_PROVIDER_LABELS.get(llm_provider, 'LLM')}.")
+                    else:
+                        metrics_payload = {
+                            "total_videos": int(len(merged_df)),
+                            "total_views": int(merged_df["views"].sum()) if "views" in merged_df.columns else None,
+                            "avg_views": float(merged_df["views"].mean()) if "views" in merged_df.columns else None,
+                            "median_views": float(merged_df["views"].median()) if "views" in merged_df.columns else None,
+                            "avg_retention": float(merged_df["retention"].mean()) if "retention" in merged_df.columns else None,
+                            "pass_rate": float((merged_df["label"] == "PASS").mean()) if "label" in merged_df.columns else None,
+                            "recent_trend_pct": float(growth_pct) if "growth_pct" in locals() else None,
+                        }
+                        prompt = (
+                            "Na podstawie metryk kanału zaproponuj 3-5 najważniejszych wniosków oraz 3 konkretne rekomendacje.\n"
+                            "Zwróć wynik w punktach. Nie powtarzaj metryk dosłownie, tylko interpretuj.\n"
+                            f"Metryki: {json.dumps(metrics_payload, ensure_ascii=False)}"
+                        )
+                        cache_key = _make_cache_key({"type": "dashboard_insights", "metrics": metrics_payload})
+                        insight = _get_ai_insight(
+                            client,
+                            llm_model,
+                            messages=[
+                                {"role": "system", "content": "Jesteś analitykiem YouTube i doradcą strategii kanału."},
+                                {"role": "user", "content": prompt},
+                            ],
+                            cache_key=cache_key,
+                            ttl_seconds=get_cache_ttl("llm_insights", 21600),
+                        )
+                        st.markdown(insight)
         
             # Charts
             chart_col1, chart_col2 = st.columns(2)
@@ -3691,7 +3849,55 @@ with tab_data:
                 st.write([script["name"] for script in scripts])
         else:
             st.warning("Nie znaleziono żadnych skryptów w podanym folderze.")
-    
+
+    st.divider()
+
+    st.subheader("📥 Import z eksportu YouTube Studio")
+
+    table_path = _find_local_export_file("table")
+    chart_path = _find_local_export_file("chart")
+    summary_path = _find_local_export_file("summary")
+
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        st.metric("Dane w tabeli", "✅" if table_path else "❌")
+        if table_path:
+            st.caption(f"Znaleziono: {table_path.name}")
+    with c2:
+        st.metric("Dane wykresu", "✅" if chart_path else "❌")
+        if chart_path:
+            st.caption(f"Znaleziono: {chart_path.name}")
+    with c3:
+        st.metric("Razem", "✅" if summary_path else "❌")
+        if summary_path:
+            st.caption(f"Znaleziono: {summary_path.name}")
+
+    if table_path:
+        if st.button("💾 Importuj dane z eksportu", use_container_width=True):
+            CHANNEL_DATA_DIR.mkdir(exist_ok=True)
+            export_df = load_local_export_table(table_path)
+            export_df.to_csv(MERGED_DATA_FILE, index=False)
+            st.success(f"✅ Zapisano {len(export_df)} wierszy do {MERGED_DATA_FILE}")
+            st.rerun()
+
+    if chart_path or summary_path:
+        with st.expander("📊 Podgląd danych wykresu"):
+            if summary_path:
+                summary_df = load_local_export_series(summary_path)
+                st.markdown("**Razem**")
+                st.dataframe(summary_df.head(20), use_container_width=True)
+                if "Data" in summary_df.columns and "Wyświetlenia zamierzone" in summary_df.columns:
+                    chart_df = summary_df.copy()
+                    chart_df["Data"] = pd.to_datetime(chart_df["Data"], errors="coerce")
+                    chart_df = chart_df.dropna(subset=["Data"]).sort_values("Data")
+                    fig = px.line(chart_df, x="Data", y="Wyświetlenia zamierzone", title="Wyświetlenia zamierzone (Razem)")
+                    fig.update_layout(height=300)
+                    st.plotly_chart(fig, use_container_width=True)
+            if chart_path:
+                chart_df = load_local_export_series(chart_path)
+                st.markdown("**Dane wykresu**")
+                st.dataframe(chart_df.head(20), use_container_width=True)
+
     st.divider()
     
     # Manual CSV upload

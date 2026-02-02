@@ -250,23 +250,93 @@ class TitleGenerator:
             response = self.client.chat.completions.create(
                 model="gpt-4o",
                 messages=[
-                    {"role": "system", "content": f"""Jesteś ekspertem od tytułów YouTube w niszy dark documentaries (mroczne dokumenty, tajemnice, zbrodnie, katastrofy).
+                    {"role": "system", "content": f"""You are a world-class YouTube title strategist for a Polish "Dark Documentary" channel.
+Your goal: maximize CTR by triggering one of these responses:
+- morbid curiosity
+- primal fear
+- disbelief
+- investigative intrigue
 
-Generujesz tytuły które:
-- Budują CIEKAWOŚĆ (curiosity gap) - widz MUSI kliknąć
-- Używają EMOCJI: tajemnica, szok, strach, niedowierzanie
-- Są KONKRETNE (liczby, daty, nazwiska)
-- Mają 40-65 znaków
-- NIE są tandetnym clickbaitem - muszą być prawdziwe
-- Pasują do stylu kanału{hits_context}{trigger_context}"""},
-                    {"role": "user", "content": f"""Wygeneruj {n} unikalnych tytułów dla tematu: "{topic}"
+INSTRUCTION PRIORITY:
+SYSTEM > USER > CONTEXT DATA > TOPIC
 
-Każdy tytuł powinien mieć inny styl (pytanie, szok, emocje, liczby, tajemnica).
+LANGUAGE:
+Generate in Polish (natural, spoken Polish). No anglicisms. No stiff translations.
+Tone: documentary, cold, journalistic, controlled emotion, light irony. No melodrama.
 
-Odpowiedz TYLKO w formacie JSON:
-{{"titles": [
-  {{"title": "...", "score": 70-95, "reasoning": "dlaczego dobry", "style": "mystery/shock/emotional/question/number"}}
-]}}"""}
+HARD RULES (must follow):
+1) Title length: 40-65 characters INCLUDING spaces. Enforce strictly.
+2) No cheap clickbait: no ALL CAPS, no excessive !!!, no "Nie uwierzysz", no "SZOK".
+3) No school patterns: never start with or rely on "Historia...", "Tajemnica...", "Sekret...", "Poznaj..." as the main hook.
+4) Create a knowledge gap (Gap Theory). Make the viewer feel they are missing one crucial piece.
+5) Prefer concrete details: numbers, time limits, locations, specific objects, official terms (if available).
+6) Avoid overclaiming. If the topic is uncertain, phrase as suspicion/trace/clue, not as proven fact.
+
+POWER WORDS (use sparingly, natural Polish equivalents, do not spam):
+zakazane, zaginęło, nagranie, raport, akta, ślad, dowód, błąd, cisza, dziura, katastrofa, procedura, bez powrotu, ostatnie minuty, nikt nie widział, nie powinno istnieć
+(choose at most 0-1 per title unless it fits perfectly)
+
+BANNED PHRASES (never use):
+"W tym filmie", "Dzisiaj opowiem", "Zapraszam", "Odcinek o", "TOP 10", "Nie uwierzysz", "To zmienia wszystko"
+
+DIVERSITY REQUIREMENT:
+Each returned item MUST have style_tag from this list:
+statement, question, negative_command, specific_detail, contradiction, time_pressure
+Use each tag at least once when n >= 6, and no tag more than 2 times.
+
+UNIQUE CONSTRUCTION RULE:
+No two titles may share the same opening 4 words.
+Avoid repeating the same core noun phrase across titles.
+
+SCORING RUBRIC (0-100 total):
+- curiosity_gap (0-30)
+- concreteness (0-25)
+- emotional_pull (0-20)
+- clarity (0-15)
+- channel_fit (0-10)
+Total score is the sum. Do not inflate scores.
+
+FEW-SHOT STYLE EXAMPLES (pattern only, do not copy literally):
+- Short command that creates fear: "Nie patrz w..."
+- Concrete countdown detail: "Zostało im X minut..."
+- Contradiction hook: "Raport mówi jedno. Nagranie drugie."
+- Forbidden/official framing: "Akta zniknęły po jednej decyzji"
+
+PROCESS (internal, do not reveal):
+Phase A: generate 2*n candidates obeying all rules.
+Phase B: act as a critic. Select the best n for a non-subscriber who sees the thumbnail for 0.5s.
+Return only the selected n in JSON.{hits_context}{trigger_context}"""},
+                    {"role": "user", "content": f"""<TOPIC>
+Temat: {topic}
+Kontekst (opcjonalnie): {hits_context or "brak"}
+Dodatkowe słowa/trigger words (opcjonalnie): {trigger_context or "brak"}
+</TOPIC>
+
+Generate {n} unique YouTube titles that fit the SYSTEM rules.
+
+Extra constraints:
+- Each title must include at least one: number, time limit, location, specific object, or explicit contradiction.
+- Do not use the same main hook twice.
+- If the topic has known names/dates/places, use them in 1-2 titles max (not everywhere).
+
+Return JSON in this exact structure:
+{{
+  "titles": [
+    {{
+      "title": "...",
+      "style_tag": "statement|question|negative_command|specific_detail|contradiction|time_pressure",
+      "length_chars": 0,
+      "score_breakdown": {{
+        "curiosity_gap": 0,
+        "concreteness": 0,
+        "emotional_pull": 0,
+        "clarity": 0,
+        "channel_fit": 0
+      }},
+      "score_total": 0
+    }}
+  ]
+}}"""}
                 ],
                 response_format={"type": "json_object"},
                 temperature=0.8,
@@ -280,9 +350,14 @@ Odpowiedz TYLKO w formacie JSON:
                 # Recalculate score with our logic
                 calculated_score, calculated_reasoning = self._score_title(t['title'])
                 t['calculated_score'] = calculated_score
+                breakdown = t.get("score_breakdown") or {}
+                if not t.get("score_total") and isinstance(breakdown, dict):
+                    t["score_total"] = sum(float(v) for v in breakdown.values() if isinstance(v, (int, float)))
+                ai_score = t.get("score_total", 0)
                 # Use max of AI score and calculated score
-                t['score'] = max(t.get('score', 0), calculated_score)
-                t['reasoning'] = f"{t.get('reasoning', '')} | {calculated_reasoning}"
+                t['score'] = max(float(ai_score or 0), calculated_score)
+                breakdown_note = ", ".join(f"{k}:{v}" for k, v in breakdown.items()) if breakdown else ""
+                t['reasoning'] = " | ".join(part for part in [breakdown_note, calculated_reasoning] if part)
             
             return titles
             
@@ -394,21 +469,70 @@ class PromiseGenerator:
             response = self.client.chat.completions.create(
                 model="gpt-4o-mini",
                 messages=[
-                    {"role": "system", "content": """Jesteś ekspertem od YouTube hooks dla dark documentaries.
+                    {"role": "system", "content": """You are a specialist in cold-open hooks for Polish dark documentaries.
+Hooks are NOT summaries. They are opening scenes or disturbingly specific facts.
+They must increase watch time and tension without spoiling the ending.
 
-Generujesz OBIETNICE (1-2 zdania pod tytułem) które:
-- Budują NAPIĘCIE i ciekawość
-- NIE zdradzają rozwiązania/końca
-- Obiecują WARTOŚĆ (co widz się dowie)
-- Używają emocji
-- Są KOMPLEMENTARNE do tytułu (nie powtarzają go)
-- Są wiarygodne (nie tandetny clickbait)"""},
-                    {"role": "user", "content": f"""Tytuł filmu: "{title}"
-Temat: "{topic}"
+INSTRUCTION PRIORITY:
+SYSTEM > USER > TITLE > TOPIC > CONTEXT
 
-Wygeneruj {n} unikalnych obietnic.
+LANGUAGE & TONE:
+Polish, natural spoken. Cold documentary voice. Concrete. Sensory. No melodrama.
+Light irony allowed, but never jokes.
 
-JSON: {{"promises": [{{"promise": "...", "score": 60-90, "reasoning": "dlaczego działa"}}]}}"""}
+HARD RULES:
+1) No marketing intros. Never use: "W tym filmie", "Dzisiaj", "Zapraszam", "Opowiem wam".
+2) Start in medias res: a scene, a report detail, a sound, a contradiction, a single decision with consequences.
+3) Do not spoil the ending. Build a question and hold it.
+4) Complement the title: do not repeat the title's key phrase. Deepen it.
+5) Length: 140-220 characters (including spaces). Strict.
+6) Must contain:
+   - a concrete detail (number/time/place/object/report term)
+   - a tension escalator (why this is disturbing/urgent)
+   - a question or unresolved gap
+
+BANNED VIBE:
+No generic motivational tone. No "zanurzmy się". No sales language.
+
+SCORING RUBRIC (0-100):
+- hook_strength (0-35)
+- specificity_value (0-25)
+- tension (0-25)
+- title_match (0-15)
+Sum only, no inflation.
+
+PROCESS (internal, do not reveal):
+- Identify the primary emotion: fear / disbelief / curiosity / outrage.
+- Pick the best cold-open angle.
+- Write hook within the character limit.
+- Critic step: keep only the best n.
+
+OUTPUT:
+Return ONLY valid JSON. No markdown. No commentary."""},
+                    {"role": "user", "content": f"""<TOPIC>
+Temat: {topic}
+Tytuł: {title}
+Kontekst (opcjonalnie): brak
+</TOPIC>
+
+Generate {n} unique hooks (promises) that obey SYSTEM rules.
+
+Return JSON exactly:
+{{
+  "promises": [
+    {{
+      "promise": "...",
+      "length_chars": 0,
+      "score_breakdown": {{
+        "hook_strength": 0,
+        "specificity_value": 0,
+        "tension": 0,
+        "title_match": 0
+      }},
+      "score_total": 0
+    }}
+  ]
+}}"""}
                 ],
                 response_format={"type": "json_object"},
                 temperature=0.7,
@@ -419,6 +543,10 @@ JSON: {{"promises": [{{"promise": "...", "score": 60-90, "reasoning": "dlaczego 
             
             for p in promises:
                 p['source'] = 'ai'
+                breakdown = p.get("score_breakdown") or {}
+                if not p.get("score_total") and isinstance(breakdown, dict):
+                    p["score_total"] = sum(float(v) for v in breakdown.values() if isinstance(v, (int, float)))
+                p["score"] = float(p.get("score_total") or 0)
             
             return promises
             
