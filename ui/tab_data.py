@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Callable
 
 import pandas as pd
+from pandas.errors import EmptyDataError
 import streamlit as st
 
 
@@ -96,9 +97,20 @@ def render_data_tab(
 
     if uploaded_files:
         validations = []
+        loaded_frames = []
         for file in uploaded_files:
             try:
                 df = pd.read_csv(file)
+            except EmptyDataError:
+                st.error(f"Plik {file.name} jest pusty lub bez nagłówków.")
+                validations.append(
+                    {
+                        "missing_required": ["title", "views"],
+                        "missing_recommended": [],
+                        "warnings": ["Plik CSV jest pusty lub nie zawiera nagłówków."],
+                    }
+                )
+                continue
             except Exception as exc:
                 st.error(f"Nie udało się wczytać pliku {file.name}: {exc}")
                 validations.append(
@@ -109,6 +121,7 @@ def render_data_tab(
                     }
                 )
                 continue
+            loaded_frames.append(df)
             st.write(
                 f"**{file.name}**: {len(df)} wierszy, kolumny: {', '.join(df.columns[:5])}"
             )
@@ -133,22 +146,19 @@ def render_data_tab(
                     "Nie można zapisać danych: brakuje wymaganych kolumn (title, views)."
                 )
                 st.stop()
+            if not loaded_frames:
+                st.error("Nie wczytano żadnych poprawnych plików CSV do zapisu.")
+                st.stop()
             channel_data_dir.mkdir(exist_ok=True)
 
-            all_dfs = []
-            for file in uploaded_files:
-                df = pd.read_csv(file)
-                all_dfs.append(df)
+            merged = pd.concat(loaded_frames, ignore_index=True)
 
-            if all_dfs:
-                merged = pd.concat(all_dfs, ignore_index=True)
+            if "title" in merged.columns:
+                merged = merged.drop_duplicates(subset=["title"], keep="last")
 
-                if "title" in merged.columns:
-                    merged = merged.drop_duplicates(subset=["title"], keep="last")
-
-                merged.to_csv(merged_data_file, index=False)
-                st.success(f"✅ Zapisano {len(merged)} wierszy do {merged_data_file}")
-                st.rerun()
+            merged.to_csv(merged_data_file, index=False)
+            st.success(f"✅ Zapisano {len(merged)} wierszy do {merged_data_file}")
+            st.rerun()
 
     st.divider()
 
