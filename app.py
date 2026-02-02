@@ -635,6 +635,7 @@ def _get_google_model_list(api_key: str) -> List[str]:
             model.name.replace("models/", "")
             for model in genai.list_models()
             if getattr(model, "name", "")
+            and "generateContent" in getattr(model, "supported_generation_methods", [])
         }
         ordered = [model_id for model_id in fallback_order if model_id in available]
         ordered.extend(sorted(model_id for model_id in available if model_id not in ordered))
@@ -645,9 +646,9 @@ def _get_google_model_list(api_key: str) -> List[str]:
 
 def _resolve_google_model(api_key: str, requested: str) -> str:
     requested = (requested or "").strip()
-    if requested and requested.lower() not in {"auto", "latest"}:
-        return requested
     fallback_order = _get_google_model_list(api_key)
+    if requested and requested.lower() not in {"auto", "latest"}:
+        return requested if requested in fallback_order else fallback_order[0]
     if not api_key or not GOOGLE_GENAI_AVAILABLE:
         return fallback_order[0]
     try:
@@ -656,6 +657,7 @@ def _resolve_google_model(api_key: str, requested: str) -> str:
             model.name.replace("models/", "")
             for model in genai.list_models()
             if getattr(model, "name", "")
+            and "generateContent" in getattr(model, "supported_generation_methods", [])
         }
         for candidate in fallback_order:
             if candidate in available:
@@ -1226,7 +1228,13 @@ with st.sidebar:
         google_model = config.get("google_model", "auto")
         google_models = ["auto"] + _get_google_model_list(google_api_key)
         if google_model not in google_models:
-            google_models.append(google_model)
+            if google_model:
+                st.warning(
+                    f"⚠️ Zapisany model Gemini '{google_model}' nie jest obsługiwany. "
+                    "Przełączam na 'auto'."
+                )
+            google_model = "auto"
+            config.set("google_model", google_model)
         google_selected = st.selectbox(
             "Model Gemini",
             options=google_models,
