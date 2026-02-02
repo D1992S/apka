@@ -576,10 +576,7 @@ def _build_prompt_from_messages(messages: List[Dict[str, str]]) -> str:
         prompt_parts.append(f"{role}:\n{content}")
     return "\n\n".join(prompt_parts).strip()
 
-def _resolve_openai_model(api_key: str, requested: str) -> str:
-    requested = (requested or "").strip()
-    if requested and requested.lower() not in {"auto", "latest"}:
-        return requested
+def _get_openai_model_list(api_key: str) -> List[str]:
     fallback_order = [
         "gpt-4o",
         "gpt-4o-mini",
@@ -589,12 +586,31 @@ def _resolve_openai_model(api_key: str, requested: str) -> str:
         "gpt-3.5-turbo",
     ]
     if not api_key:
+        return fallback_order
+    try:
+        from openai import OpenAI
+        client = OpenAI(api_key=api_key)
+        models = client.models.list()
+        available = {model.id for model in models.data if model.id}
+        ordered = [model_id for model_id in fallback_order if model_id in available]
+        ordered.extend(sorted(model_id for model_id in available if model_id not in ordered))
+        return ordered or fallback_order
+    except Exception:
+        return fallback_order
+
+
+def _resolve_openai_model(api_key: str, requested: str) -> str:
+    requested = (requested or "").strip()
+    if requested and requested.lower() not in {"auto", "latest"}:
+        return requested
+    fallback_order = _get_openai_model_list(api_key)
+    if not api_key:
         return fallback_order[0]
     try:
         from openai import OpenAI
         client = OpenAI(api_key=api_key)
         models = client.models.list()
-        available = {model.id for model in models.data}
+        available = {model.id for model in models.data if model.id}
         for candidate in fallback_order:
             if candidate in available:
                 return candidate
@@ -603,10 +619,7 @@ def _resolve_openai_model(api_key: str, requested: str) -> str:
     return fallback_order[0]
 
 
-def _resolve_google_model(api_key: str, requested: str) -> str:
-    requested = (requested or "").strip()
-    if requested and requested.lower() not in {"auto", "latest"}:
-        return requested
+def _get_google_model_list(api_key: str) -> List[str]:
     fallback_order = [
         "gemini-1.5-pro-latest",
         "gemini-1.5-pro",
@@ -615,10 +628,35 @@ def _resolve_google_model(api_key: str, requested: str) -> str:
         "gemini-1.0-pro",
     ]
     if not api_key or not GOOGLE_GENAI_AVAILABLE:
+        return fallback_order
+    try:
+        genai.configure(api_key=api_key)
+        available = {
+            model.name.replace("models/", "")
+            for model in genai.list_models()
+            if getattr(model, "name", "")
+        }
+        ordered = [model_id for model_id in fallback_order if model_id in available]
+        ordered.extend(sorted(model_id for model_id in available if model_id not in ordered))
+        return ordered or fallback_order
+    except Exception:
+        return fallback_order
+
+
+def _resolve_google_model(api_key: str, requested: str) -> str:
+    requested = (requested or "").strip()
+    if requested and requested.lower() not in {"auto", "latest"}:
+        return requested
+    fallback_order = _get_google_model_list(api_key)
+    if not api_key or not GOOGLE_GENAI_AVAILABLE:
         return fallback_order[0]
     try:
         genai.configure(api_key=api_key)
-        available = {model.name.replace("models/", "") for model in genai.list_models()}
+        available = {
+            model.name.replace("models/", "")
+            for model in genai.list_models()
+            if getattr(model, "name", "")
+        }
         for candidate in fallback_order:
             if candidate in available:
                 return candidate
@@ -1116,14 +1154,17 @@ with st.sidebar:
         )
         openai_model = config.get("openai_model", "auto")
         openai_models = ["auto"] + _get_openai_model_list(openai_api_key)
+        if openai_model not in openai_models:
+            openai_models.append(openai_model)
         openai_selected = st.selectbox(
             "Model OpenAI",
-            value=config.get("openai_model", "auto"),
+            options=openai_models,
+            index=openai_models.index(openai_model),
             key="openai_model_input",
             help="Wpisz nazwę modelu lub użyj 'auto' aby dobrać najnowszy dostępny."
         )
-        if openai_model != config.get("openai_model", "auto"):
-            config.set("openai_model", openai_model)
+        if openai_selected != openai_model:
+            config.set("openai_model", openai_selected)
         if openai_api_key != saved_openai_key:
             if st.button("💾 Zapisz klucz OpenAI", key="save_openai"):
                 config.set_api_key(openai_api_key)
@@ -1184,14 +1225,17 @@ with st.sidebar:
         )
         google_model = config.get("google_model", "auto")
         google_models = ["auto"] + _get_google_model_list(google_api_key)
+        if google_model not in google_models:
+            google_models.append(google_model)
         google_selected = st.selectbox(
             "Model Gemini",
-            value=config.get("google_model", "auto"),
+            options=google_models,
+            index=google_models.index(google_model),
             key="google_model_input",
             help="Wpisz nazwę modelu lub użyj 'auto' aby dobrać najnowszy dostępny."
         )
-        if google_model != config.get("google_model", "auto"):
-            config.set("google_model", google_model)
+        if google_selected != google_model:
+            config.set("google_model", google_selected)
         if google_api_key != saved_google_key:
             if st.button("💾 Zapisz klucz Google", key="save_google"):
                 config.set_google_api_key(google_api_key)
