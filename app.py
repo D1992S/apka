@@ -194,43 +194,6 @@ CACHE_VERSION = "v1"
 # HELPER FUNCTIONS
 # =============================================================================
 
-def load_folder_csvs() -> Optional[pd.DataFrame]:
-    """Ładuje i łączy CSV z folderu channel_data, jeśli są nowsze niż merge."""
-    channel_data_dir = CHANNEL_DATA_DIR
-    merged_data_file = MERGED_DATA_FILE
-    if not channel_data_dir.exists():
-        return None
-
-    excluded = {merged_data_file.name, "synced_channel_data.csv"}
-    csv_files = sorted(
-        path for path in channel_data_dir.glob("*.csv") if path.name not in excluded
-    )
-    if not csv_files:
-        return None
-
-    if merged_data_file.exists():
-        merged_mtime = merged_data_file.stat().st_mtime
-        if all(path.stat().st_mtime <= merged_mtime for path in csv_files):
-            return None
-
-    frames = []
-    for path in csv_files:
-        try:
-            frames.append(pd.read_csv(path))
-        except Exception:
-            continue
-
-    if not frames:
-        return None
-
-    merged = pd.concat(frames, ignore_index=True)
-    if "title" in merged.columns:
-        merged = merged.drop_duplicates(subset=["title"], keep="last")
-    merged_data_file.parent.mkdir(exist_ok=True)
-    merged.to_csv(merged_data_file, index=False)
-    return merged
-
-
 def load_merged_data() -> Optional[pd.DataFrame]:
     """Ładuje połączone dane kanału z normalizacją kolumn"""
     from config_manager import normalize_dataframe_columns
@@ -240,10 +203,6 @@ def load_merged_data() -> Optional[pd.DataFrame]:
     if synced_file.exists():
         df = pd.read_csv(synced_file)
         return normalize_dataframe_columns(df)
-
-    folder_df = load_folder_csvs()
-    if folder_df is not None:
-        return normalize_dataframe_columns(folder_df)
 
     if MERGED_DATA_FILE.exists():
         df = pd.read_csv(MERGED_DATA_FILE)
