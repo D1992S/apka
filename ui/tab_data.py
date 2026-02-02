@@ -89,6 +89,7 @@ def render_data_tab(
 
     st.subheader("📤 Ręczny upload CSV")
     st.caption("Wymagane kolumny: `title`, `views`.")
+    st.caption(f"Alternatywnie wrzuć pliki CSV do folderu: {channel_data_dir.resolve()}")
 
     uploaded_files = st.file_uploader(
         "Przeciągnij pliki CSV", type=["csv"], accept_multiple_files=True
