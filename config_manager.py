@@ -10,11 +10,57 @@ Zarządza konfiguracją i pamięcią lokalną aplikacji.
 
 import json
 import os
+import logging
 from pathlib import Path
 from datetime import datetime
 from typing import Dict, List, Optional, Any
 from dataclasses import dataclass, asdict
 import hashlib
+
+
+# =============================================================================
+# LOGGING SETUP
+# =============================================================================
+
+def setup_logger(name: str = "yt_evaluator", level: int = logging.INFO) -> logging.Logger:
+    """
+    Tworzy i konfiguruje logger dla aplikacji.
+
+    Użycie:
+        from config_manager import setup_logger
+        logger = setup_logger(__name__)
+        logger.info("Wiadomość")
+        logger.warning("Ostrzeżenie")
+        logger.error("Błąd")
+    """
+    logger = logging.getLogger(name)
+
+    # Unikaj duplikowania handlerów
+    if not logger.handlers:
+        logger.setLevel(level)
+
+        # Handler do konsoli
+        console_handler = logging.StreamHandler()
+        console_handler.setLevel(level)
+
+        # Format: [timestamp] [level] [module] message
+        formatter = logging.Formatter(
+            '%(asctime)s | %(levelname)-7s | %(name)s | %(message)s',
+            datefmt='%H:%M:%S'
+        )
+        console_handler.setFormatter(formatter)
+        logger.addHandler(console_handler)
+
+        # Opcjonalnie: handler do pliku (odkomentuj jeśli potrzebujesz)
+        # file_handler = logging.FileHandler('app_data/app.log', encoding='utf-8')
+        # file_handler.setFormatter(formatter)
+        # logger.addHandler(file_handler)
+
+    return logger
+
+
+# Logger dla tego modułu
+logger = setup_logger(__name__)
 
 
 # Ścieżki do plików konfiguracyjnych
@@ -32,6 +78,32 @@ COMPETITORS_FILE = CONFIG_DIR / "competitors.json"
 def ensure_config_dir():
     """Tworzy folder konfiguracyjny jeśli nie istnieje"""
     CONFIG_DIR.mkdir(exist_ok=True)
+
+
+def _atomic_write_json(path: Path, data: Any, label: str = "plik") -> bool:
+    """
+    Atomowy zapis JSON - zabezpiecza przed utratą danych przy crashu.
+
+    Używa wzorca write-to-temp-then-rename który jest atomowy na większości systemów plików.
+    """
+    ensure_config_dir()
+    temp_file = path.with_suffix('.tmp')
+    try:
+        # Zapisz do pliku tymczasowego
+        with open(temp_file, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, ensure_ascii=False, default=str)
+
+        # Atomowa zamiana (rename jest atomowy na POSIX)
+        temp_file.replace(path)
+        return True
+    except OSError as e:
+        logger.warning(f"Nie udało się zapisać {label}: {e}")
+        # Usuń plik tymczasowy jeśli istnieje
+        try:
+            temp_file.unlink(missing_ok=True)
+        except OSError:
+            pass
+        return False
 
 
 def _safe_load_json(path: Path, default: Any, label: str):
@@ -80,6 +152,24 @@ class AppConfig:
         "llm_provider": "openai",
         "openai_model": "auto",
         "google_model": "auto",
+        # Konfiguracja scoringu - możesz dostosować progi i wagi
+        "scoring": {
+            "threshold_pass": 68,        # Próg PASS (wynik >= to PASS)
+            "threshold_border": 52,      # Próg BORDER (wynik >= to BORDER, poniżej FAIL)
+            "weight_data": 0.30,         # Waga modelu klasyfikacji (30%)
+            "weight_metrics": 0.25,      # Waga modeli regresji views/retention (25%)
+            "weight_llm": 0.45,          # Waga oceny LLM (45%)
+            "auto_views_pass": 50000,    # Auto-labeling: views powyżej = PASS
+            "auto_views_fail": 15000,    # Auto-labeling: views poniżej = FAIL
+            "auto_retention_pass": 45.0, # Auto-labeling: retention powyżej = PASS
+            "auto_retention_fail": 25.0, # Auto-labeling: retention poniżej = FAIL
+        },
+        # Konfiguracja scoringu tytułów
+        "title_scoring": {
+            "ideal_length": 52,          # Idealna długość tytułu (znaki)
+            "min_good_length": 40,       # Minimalna dobra długość
+            "max_good_length": 65,       # Maksymalna dobra długość
+        },
     }
     
     def __init__(self):
@@ -124,17 +214,12 @@ class AppConfig:
         saved = _safe_load_json(CONFIG_FILE, {}, "config.json")
         if isinstance(saved, dict):
             return self._normalize_config(saved)
-        print("⚠ config.json ma nieprawidłowy format. Używam domyślnych ustawień.")
+        logger.warning("config.json ma nieprawidłowy format. Używam domyślnych ustawień.")
         return self.DEFAULT_CONFIG.copy()
     
     def save(self):
-        """Zapisuje konfigurację do pliku"""
-        ensure_config_dir()
-        try:
-            with open(CONFIG_FILE, "w", encoding="utf-8") as f:
-                json.dump(self.config, f, indent=2, ensure_ascii=False)
-        except OSError as e:
-            print(f"⚠ Nie udało się zapisać config.json: {e}")
+        """Zapisuje konfigurację do pliku (atomic write)"""
+        _atomic_write_json(CONFIG_FILE, self.config, "config.json")
     
     def get(self, key: str, default=None):
         """Pobiera wartość konfiguracji"""
@@ -190,13 +275,8 @@ class EvaluationHistory:
         return []
     
     def save(self):
-        """Zapisuje historię do pliku"""
-        ensure_config_dir()
-        try:
-            with open(HISTORY_FILE, "w", encoding="utf-8") as f:
-                json.dump(self.history, f, indent=2, ensure_ascii=False, default=str)
-        except OSError as e:
-            print(f"⚠ Nie udało się zapisać historii: {e}")
+        """Zapisuje historię do pliku (atomic write)"""
+        _atomic_write_json(HISTORY_FILE, self.history, "evaluation_history.json")
     
     def add(self, evaluation: Dict):
         """Dodaje ocenę do historii"""
@@ -370,10 +450,8 @@ class IdeaVault:
         return []
     
     def save(self):
-        """Zapisuje vault do pliku"""
-        ensure_config_dir()
-        with open(IDEA_VAULT_FILE, "w", encoding="utf-8") as f:
-            json.dump(self.ideas, f, indent=2, ensure_ascii=False)
+        """Zapisuje vault do pliku (atomic write)"""
+        _atomic_write_json(IDEA_VAULT_FILE, self.ideas, "idea_vault.json")
     
     def add(self, title: str, promise: str = "", score: int = 0,
             reason: str = "", tags: List[str] = None, remind_when: str = None,
@@ -516,9 +594,8 @@ class SeriesManager:
         return {"series": {}, "video_to_series": {}}
 
     def save(self):
-        ensure_config_dir()
-        with open(SERIES_MAP_FILE, "w", encoding="utf-8") as f:
-            json.dump(self.data, f, indent=2, ensure_ascii=False)
+        """Zapisuje mapę serii do pliku (atomic write)"""
+        _atomic_write_json(SERIES_MAP_FILE, self.data, "series_map.json")
 
     def list_series(self) -> List[str]:
         return sorted(list(self.data.get("series", {}).keys()))
@@ -583,9 +660,8 @@ class CompetitorManager:
         return []
 
     def save(self):
-        ensure_config_dir()
-        with open(COMPETITORS_FILE, "w", encoding="utf-8") as f:
-            json.dump(self.competitors, f, indent=2, ensure_ascii=False)
+        """Zapisuje listę konkurencji do pliku (atomic write)"""
+        _atomic_write_json(COMPETITORS_FILE, self.competitors, "competitors.json")
 
     def add(self, name: str, channel_id: str, niche_notes: str = "") -> str:
         name = (name or "").strip()
@@ -632,10 +708,8 @@ class TrendAlerts:
         return []
     
     def save(self):
-        """Zapisuje alerty do pliku"""
-        ensure_config_dir()
-        with open(TREND_ALERTS_FILE, "w", encoding="utf-8") as f:
-            json.dump(self.alerts, f, indent=2, ensure_ascii=False)
+        """Zapisuje alerty do pliku (atomic write)"""
+        _atomic_write_json(TREND_ALERTS_FILE, self.alerts, "trend_alerts.json")
     
     def add_topic(self, topic: str, threshold: int = 50):
         """Dodaje temat do monitorowania"""
@@ -691,6 +765,51 @@ class TrendAlerts:
 # FUNKCJE POMOCNICZE
 # =============================================================================
 
+# Mapowanie aliasów kolumn CSV do standardowych nazw
+COLUMN_ALIASES = {
+    'title': ['title', 'title_api', 'Title', 'TITLE', 'tytul', 'Tytuł'],
+    'views': ['views', 'viewCount', 'Views', 'VIEWS', 'wyswietlenia'],
+    'retention': ['retention', 'avgViewPercentage', 'avg_view_percentage', 'Retention', 'retencja'],
+    'published_at': ['published_at', 'publishedAt', 'date', 'published', 'data_publikacji'],
+    'label': ['label', 'Label', 'LABEL', 'etykieta'],
+    'video_id': ['video_id', 'videoId', 'id', 'ID'],
+    'likes': ['likes', 'likeCount', 'Likes'],
+    'comments': ['comments', 'commentCount', 'Comments'],
+    'duration': ['duration', 'duration_seconds', 'dlugosc'],
+}
+
+
+def normalize_dataframe_columns(df) -> 'pd.DataFrame':
+    """
+    Normalizuje nazwy kolumn DataFrame do standardowych nazw.
+
+    Używa COLUMN_ALIASES do mapowania różnych wariantów nazw kolumn
+    (np. 'viewCount' -> 'views', 'publishedAt' -> 'published_at').
+
+    Args:
+        df: pandas DataFrame z danymi kanału
+
+    Returns:
+        DataFrame z znormalizowanymi nazwami kolumn
+    """
+    import pandas as pd
+    if df is None or not isinstance(df, pd.DataFrame):
+        return df
+
+    df = df.copy()
+
+    for standard_name, aliases in COLUMN_ALIASES.items():
+        # Sprawdź czy standardowa nazwa już istnieje
+        if standard_name in df.columns:
+            continue
+
+        # Szukaj aliasu
+        for alias in aliases:
+            if alias in df.columns and alias != standard_name:
+                df[standard_name] = df[alias]
+                break
+
+    return df
 
 
 def get_series_manager():

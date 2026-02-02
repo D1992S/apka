@@ -80,7 +80,14 @@ class TitleGenerator:
         'tajemnicze', 'mroczne', 'szok', 'niewyjaśnione', 'sensacyjne', 'niesamowite'
     ]
     QUESTION_FILLERS = ["o co", "czy to", "jak to"]
-    
+
+    # Prekompilowane wyrażenia regularne (dla wydajności)
+    _RE_CONTEXT_NUM = re.compile(r'\d+[\s.\-]*(min|h|godz|lat|osób|ofiar|dni|ciała|km|mln|tys)', re.IGNORECASE)
+    _RE_DATE_YEAR = re.compile(r'(19|20)\d{2}')
+    _RE_ANY_NUMBER = re.compile(r'\d+')
+    _RE_SZOK = re.compile(r'\bszok\w*\b', re.IGNORECASE)
+    _RE_SCHOOL_PATTERN = re.compile(r'^(historia|tajemnica|sekret|opowieść|prawda o|wszystko o)', re.IGNORECASE)
+
     def __init__(self, openai_client=None, channel_data: pd.DataFrame = None):
         self.client = openai_client
         self.channel_data = channel_data
@@ -192,12 +199,10 @@ class TitleGenerator:
             reasons.append("❌ Skrajna długość tytułu")
         
         # === 2. Liczby z kontekstem ===
-        context_num_pattern = r'\d+[\s\.\-]*(min|h|godz|lat|osób|ofiar|dni|ciała|km|mln|tys)'
-        date_year_pattern = r'(19|20)\d{2}'
-        if re.search(context_num_pattern, text) or re.search(date_year_pattern, text):
+        if self._RE_CONTEXT_NUM.search(text) or self._RE_DATE_YEAR.search(text):
             score += 10
             reasons.append("✅ Liczba z kontekstem (czas/osoby/data)")
-        elif re.search(r'\d+', text):
+        elif self._RE_ANY_NUMBER.search(text):
             score += 3
             reasons.append("✅ Liczba bez kontekstu")
         
@@ -238,11 +243,10 @@ class TitleGenerator:
             reasons.append("⚠️ Dwukropek zabiera miejsce")
         
         # === 6. Anti-clickbait & anti-school ===
-        if re.search(r'\bszok\w*\b', text):
+        if self._RE_SZOK.search(text):
             score -= 12
             reasons.append("❌ Clickbaitowe 'szok'")
-        school_pattern = r'^(historia|tajemnica|sekret|opowieść|prawda o|wszystko o)'
-        if re.search(school_pattern, text):
+        if self._RE_SCHOOL_PATTERN.search(text):
             score -= 15
             reasons.append("❌ Szkolny szablon tytułu")
         

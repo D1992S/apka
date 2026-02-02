@@ -98,6 +98,53 @@ st.set_page_config(
 # SESSION STATE - zachowuje dane między przeładowaniami
 # =============================================================================
 
+def init_session_state():
+    """
+    Inicjalizuje wszystkie klucze session state z domyślnymi wartościami.
+    Centralne miejsce definicji stanu aplikacji.
+    """
+    defaults = {
+        # Diagnostyka i statystyki
+        "diagnostics": [],
+        "llm_stats": {"calls": 0, "cached_hits": 0, "by_kind": {}},
+
+        # Cache TTL (godziny)
+        "cache_ttl": {
+            "trends": 6,
+            "external": 12,
+            "competition": 6,
+            "similar_hits": 6,
+            "llm_titles": 24,
+            "llm_promises": 24,
+        },
+
+        # Topic evaluation
+        "topic_job_main": None,
+        "topic_result_main": None,
+        "batch_topic_results": None,
+
+        # Narzędzia
+        "last_wtopa": None,
+        "wtopa_title": "",
+        "wtopa_views": 0,
+        "wtopa_ret": 0.0,
+
+        # Idea Vault
+        "vault_selected_ids": [],
+
+        # Status API
+        "openai_api_status": {"tested": False, "success": False, "message": ""},
+        "google_api_status": {"tested": False, "success": False, "message": ""},
+    }
+
+    for key, default_value in defaults.items():
+        if key not in st.session_state:
+            st.session_state[key] = default_value
+
+
+# Inicjalizuj session state przy starcie
+init_session_state()
+
 
 # =============================================================================
 # STYLE CSS (DARK MODE FRIENDLY)
@@ -461,14 +508,18 @@ CACHE_VERSION = "v1"
 # =============================================================================
 
 def load_merged_data() -> Optional[pd.DataFrame]:
-    """Ładuje połączone dane kanału"""
+    """Ładuje połączone dane kanału z normalizacją kolumn"""
+    from config_manager import normalize_dataframe_columns
+
     # Najpierw sprawdź synced data
     synced_file = CHANNEL_DATA_DIR / "synced_channel_data.csv"
     if synced_file.exists():
-        return pd.read_csv(synced_file)
-    
+        df = pd.read_csv(synced_file)
+        return normalize_dataframe_columns(df)
+
     if MERGED_DATA_FILE.exists():
-        return pd.read_csv(MERGED_DATA_FILE)
+        df = pd.read_csv(MERGED_DATA_FILE)
+        return normalize_dataframe_columns(df)
     return None
 
 def validate_channel_dataframe(df: pd.DataFrame) -> Dict[str, List[str]]:
@@ -697,7 +748,53 @@ def get_llm_client(provider: str, api_key: str, model: str):
             return None
         return GoogleAIStudioClient(api_key, model=model)
     from openai import OpenAI
-    return OpenAI(api_key=api_key)
+    # Dodaj timeout do klienta OpenAI (30s connect, 60s read)
+    return OpenAI(api_key=api_key, timeout=60.0)
+
+
+def safe_llm_call(func, *args, max_retries: int = 2, **kwargs) -> Tuple[Any, Optional[str]]:
+    """
+    Bezpieczne wywołanie funkcji LLM z retry i obsługą błędów.
+
+    Returns:
+        Tuple[result, error_message] - jeśli error_message is None, wywołanie się powiodło
+    """
+    import time
+
+    last_error = None
+    for attempt in range(max_retries + 1):
+        try:
+            result = func(*args, **kwargs)
+            return result, None
+        except Exception as e:
+            last_error = e
+            error_msg = str(e).lower()
+
+            # Błędy które nie mają sensu retryować
+            if any(x in error_msg for x in ["invalid_api_key", "incorrect api key", "authentication"]):
+                return None, "Nieprawidłowy klucz API"
+            if "insufficient_quota" in error_msg:
+                return None, "Brak środków na koncie API"
+
+            # Błędy które warto retryować
+            if any(x in error_msg for x in ["rate limit", "rate_limit", "too many requests"]):
+                if attempt < max_retries:
+                    time.sleep(2 ** attempt)  # Exponential backoff
+                    continue
+                return None, "Przekroczono limit zapytań. Spróbuj ponownie za chwilę."
+
+            if any(x in error_msg for x in ["timeout", "connection", "network"]):
+                if attempt < max_retries:
+                    time.sleep(1)
+                    continue
+                return None, "Problem z połączeniem. Sprawdź internet."
+
+            # Inne błędy
+            if attempt < max_retries:
+                time.sleep(1)
+                continue
+
+    return None, f"Błąd API: {str(last_error)[:100]}"
 
 
 def test_openai_connection(api_key: str, model: str = "auto") -> Tuple[bool, str]:
@@ -2765,10 +2862,20 @@ Bez komentarzy i bez markdown.
                             if not client and api_key:
                                 st.warning(f"Nie udało się zainicjalizować {LLM_PROVIDER_LABELS.get(llm_provider, 'LLM')}.")
                             topic_eval = get_topic_evaluator(client, merged_df)
-                            for item in plan_items:
+
+                            # Progress bar dla oceny tematów
+                            progress_bar = st.progress(0)
+                            status_text = st.empty()
+                            total_items = len([i for i in plan_items if (i.get("topic") or "").strip()])
+
+                            for idx, item in enumerate(plan_items):
                                 topic = (item.get("topic") or "").strip()
                                 if not topic:
                                     continue
+
+                                status_text.text(f"Oceniam temat {idx + 1}/{total_items}: {topic[:40]}...")
+                                progress_bar.progress((idx + 1) / max(total_items, 1))
+
                                 res = topic_eval.evaluate(topic, n_titles=6, n_promises=3)
                                 eval_results.append({
                                     "week": item.get("week", 1),
@@ -2782,6 +2889,11 @@ Bez komentarzy i bez markdown.
                                     "opportunity": (res.get("competition") or {}).get("opportunity_score", 50),
                                     "payload": res,
                                 })
+
+                            # Wyczyść progress bar po zakończeniu
+                            progress_bar.empty()
+                            status_text.empty()
+
                         except Exception as e:
                             st.warning(f"Ocena tematów nie zadziałała: {e}")
 
@@ -3100,7 +3212,16 @@ Bez komentarzy i bez markdown.
             if st.button("🔄 Sprawdź trendy teraz", key="check_trend_alerts_now"):
                 if ADVANCED_AVAILABLE:
                     trends_analyzer = TrendsAnalyzer()
-                    for alert in all_alerts:
+
+                    # Progress bar dla sprawdzania trendów
+                    progress_bar = st.progress(0)
+                    status_text = st.empty()
+                    total_alerts = len(all_alerts)
+
+                    for idx, alert in enumerate(all_alerts):
+                        status_text.text(f"Sprawdzam {idx + 1}/{total_alerts}: {alert['topic'][:30]}...")
+                        progress_bar.progress((idx + 1) / max(total_alerts, 1))
+
                         result = trends_analyzer.check_trend([alert["topic"]])
                         if result.get("status") == "OK":
                             det = (result.get("details") or {}).get(alert["topic"], {})
@@ -3108,6 +3229,9 @@ Bez komentarzy i bez markdown.
                             current = overall.get("score", 0)  # fallback
                             is_trending = overall.get("verdict") in ["UP", "PEAK"]
                             alerts.update_check(alert["id"], current, is_trending)
+
+                    progress_bar.empty()
+                    status_text.empty()
                     st.success("✅ Sprawdzono!")
                     st.rerun()
         else:

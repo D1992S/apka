@@ -32,6 +32,14 @@ try:
 except ImportError:
     YT_SEARCH_AVAILABLE = False
 
+# Import PromiseGenerator z topic_analyzer (unikamy duplikacji)
+try:
+    from topic_analyzer import PromiseGenerator as _TopicPromiseGenerator
+    _TOPIC_ANALYZER_AVAILABLE = True
+except ImportError:
+    _TopicPromiseGenerator = None
+    _TOPIC_ANALYZER_AVAILABLE = False
+
 
 # =============================================================================
 # 1. HOOK ANALYZER
@@ -1348,106 +1356,49 @@ class PackagingDNA:
 # =============================================================================
 
 class PromiseGenerator:
-    """Generuje propozycje obietnic na podstawie tytułu"""
-    
-    PROMISE_TEMPLATES = [
-        "To, co odkryjesz, zmieni Twoje postrzeganie {topic}.",
-        "Nikt nie mówi o tym, co naprawdę wydarzyło się {when}.",
-        "Historia, która przez lata była ukrywana przed opinią publiczną.",
-        "Dowody, które zmieniają wszystko, co wiedzieliśmy o {topic}.",
-        "Prawda, którą próbowano zatuszować przez {years} lat.",
-        "To nie był przypadek. To był {what}.",
-        "Dlaczego {who} do dziś milczy na ten temat?",
-        "Fakty, które sprawią, że już nigdy nie spojrzysz na {topic} tak samo.",
-        "Co naprawdę kryje się za oficjalną wersją wydarzeń?",
-        "Historia tak niewiarygodna, że trudno uwierzyć, że jest prawdziwa.",
-    ]
-    
+    """
+    Adapter dla PromiseGenerator z topic_analyzer.
+    Zachowuje wsteczną kompatybilność z metodą generate_from_title().
+    """
+
     def __init__(self, openai_client=None):
         self.client = openai_client
-    
+        # Użyj implementacji z topic_analyzer jeśli dostępna
+        if _TOPIC_ANALYZER_AVAILABLE and _TopicPromiseGenerator is not None:
+            self._impl = _TopicPromiseGenerator(openai_client)
+        else:
+            self._impl = None
+
     def generate_from_title(self, title: str, n: int = 5, use_ai: bool = True) -> List[Dict]:
         """
         Generuje propozycje obietnic na podstawie tytułu.
-        
+
         Returns:
-            Lista {promise, score, style}
+            Lista {promise, score, style/source}
         """
-        promises = []
-        
-        # 1. Wygeneruj template-based
-        template_promises = self._template_based(title)
-        promises.extend(template_promises[:3])
-        
-        # 2. AI-generated (jeśli dostępne)
-        if use_ai and self.client:
-            ai_promises = self._ai_generate(title, n - len(promises))
-            promises.extend(ai_promises)
-        
-        return promises[:n]
-    
-    def _template_based(self, title: str) -> List[Dict]:
-        """Generuje obietnice z szablonów"""
-        import re
-        
-        # Wyciągnij elementy z tytułu
-        topic = title.lower()
-        
-        # Szukaj dat
-        year_match = re.search(r'\b(19|20)\d{2}\b', title)
-        years = year_match.group(0) if year_match else "dekady"
-        
-        promises = []
-        for template in self.PROMISE_TEMPLATES[:5]:
-            promise = template.format(
-                topic=topic[:30],
-                when="tamtej nocy",
-                years=years,
-                what="plan",
-                who="odpowiedzialni"
-            )
-            promises.append({
-                "promise": promise,
-                "score": 60,  # Base score dla template
-                "style": "template"
-            })
-        
-        return promises
-    
-    def _ai_generate(self, title: str, n: int) -> List[Dict]:
-        """Generuje obietnice przez AI"""
-        if not self.client:
-            return []
-        
-        try:
-            response = self.client.chat.completions.create(
-                model="gpt-4o-mini",
-                messages=[
-                    {"role": "system", "content": """Jesteś ekspertem od YouTube dark documentaries.
-Generujesz OBIETNICE (hook pod tytułem) - krótkie, intrygujące zdania które budują napięcie.
+        if self._impl is not None:
+            # Deleguj do implementacji z topic_analyzer
+            # Metoda generate() przyjmuje: title, topic, n, use_ai
+            results = self._impl.generate(title=title, topic=title, n=n, use_ai=use_ai)
+            # Mapuj 'source' -> 'style' dla wstecznej kompatybilności
+            for r in results:
+                if 'source' in r and 'style' not in r:
+                    r['style'] = r['source']
+            return results
+        else:
+            # Fallback - prosta implementacja bez AI
+            return self._fallback_generate(title, n)
 
-Zasady:
-- Max 2 zdania
-- Buduj tajemnicę, nie zdradzaj
-- Używaj emocji: strach, ciekawość, szok
-- Unikaj clickbaitu - obietnica musi być spełniona w filmie
-"""},
-                    {"role": "user", "content": f"""Wygeneruj {n} propozycji obietnic dla tytułu:
-"{title}"
-
-Odpowiedz w formacie JSON:
-[{{"promise": "...", "score": 70-90, "style": "mystery/shock/curiosity"}}]"""}
-                ],
-                response_format={"type": "json_object"}
-            )
-            
-            import json
-            result = json.loads(response.choices[0].message.content)
-            return result if isinstance(result, list) else result.get("promises", [])
-            
-        except Exception as e:
-            print(f"AI promise generation error: {e}")
-            return []
+    def _fallback_generate(self, title: str, n: int) -> List[Dict]:
+        """Prosta implementacja bez zależności od topic_analyzer"""
+        templates = [
+            "To, co odkryjesz, zmieni Twoje postrzeganie tego tematu.",
+            "Historia, która przez lata była ukrywana przed opinią publiczną.",
+            "Co naprawdę kryje się za oficjalną wersją wydarzeń?",
+            "Fakty, które sprawią, że już nigdy nie spojrzysz na to tak samo.",
+            "Prawda jest znacznie mroczniejsza niż oficjalna wersja.",
+        ]
+        return [{"promise": t, "score": 60, "style": "template"} for t in templates[:n]]
 
 
 class ABTitleTester:
