@@ -22,7 +22,7 @@ import hashlib
 import calendar
 from pathlib import Path
 from datetime import datetime, timedelta
-from typing import Optional, Dict, List, Tuple
+from typing import Any, Optional, Dict, List, Tuple
 from types import SimpleNamespace
 import plotly.graph_objects as go
 import plotly.express as px
