@@ -57,8 +57,8 @@ class AppConfig:
         "channel_id": "",
         "last_sync": None,
         "llm_provider": "openai",
-        "openai_model": "gpt-4o-mini",
-        "google_model": "gemini-1.5-pro-latest",
+        "openai_model": "auto",
+        "google_model": "auto",
     }
     
     def __init__(self):

@@ -537,14 +537,14 @@ def _save_cache_store(cache: Dict) -> None:
         json.dump(cache, f, indent=2, ensure_ascii=False, default=str)
 
 class GoogleAIStudioClient:
-    def __init__(self, api_key: str, model: str = "gemini-1.5-pro-latest"):
+    def __init__(self, api_key: str, model: str = "auto"):
         if not GOOGLE_GENAI_AVAILABLE:
             raise RuntimeError("Brak biblioteki google-generativeai.")
         if not api_key:
             raise RuntimeError("Brak Google AI Studio API key.")
         genai.configure(api_key=api_key)
         self._genai = genai
-        self.model_name = model
+        self.model_name = _resolve_google_model(api_key, model)
         self.chat = self.Chat(self)
 
     class Chat:
@@ -576,6 +576,89 @@ def _build_prompt_from_messages(messages: List[Dict[str, str]]) -> str:
         prompt_parts.append(f"{role}:\n{content}")
     return "\n\n".join(prompt_parts).strip()
 
+@st.cache_data(ttl=3600, show_spinner=False)
+def _get_openai_model_list(api_key: str) -> List[str]:
+    if not api_key:
+        return []
+    try:
+        from openai import OpenAI
+        client = OpenAI(api_key=api_key)
+        models = client.models.list()
+        ids = {model.id for model in models.data}
+        return sorted(ids)
+    except Exception:
+        return []
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _get_google_model_list(api_key: str) -> List[str]:
+    if not api_key or not GOOGLE_GENAI_AVAILABLE:
+        return []
+    try:
+        genai.configure(api_key=api_key)
+        return sorted({model.name.replace("models/", "") for model in genai.list_models()})
+    except Exception:
+        return []
+
+def _resolve_openai_model(api_key: str, requested: str) -> str:
+    requested = (requested or "").strip()
+    if requested and requested.lower() not in {"auto", "latest"}:
+        return requested
+    fallback_order = [
+        "gpt-4o",
+        "gpt-4o-mini",
+        "gpt-4.1",
+        "gpt-4-turbo",
+        "gpt-4",
+        "gpt-3.5-turbo",
+    ]
+    if not api_key:
+        return fallback_order[0]
+    try:
+        from openai import OpenAI
+        client = OpenAI(api_key=api_key)
+        models = client.models.list()
+        preferred_prefixes = ("gpt-4o", "gpt-4.1", "gpt-4-turbo", "gpt-4")
+        preferred = [
+            model for model in models.data
+            if model.id.startswith(preferred_prefixes)
+        ]
+        if preferred:
+            preferred.sort(key=lambda model: getattr(model, "created", 0), reverse=True)
+            return preferred[0].id
+        available = {model.id for model in models.data}
+        for candidate in fallback_order:
+            if candidate in available:
+                return candidate
+    except Exception:
+        pass
+    return fallback_order[0]
+
+
+def _resolve_google_model(api_key: str, requested: str) -> str:
+    requested = (requested or "").strip()
+    if requested and requested.lower() not in {"auto", "latest"}:
+        return requested
+    fallback_order = [
+        "gemini-1.5-pro-latest",
+        "gemini-1.5-pro",
+        "gemini-1.5-flash-latest",
+        "gemini-1.5-flash",
+        "gemini-1.0-pro",
+    ]
+    if not api_key or not GOOGLE_GENAI_AVAILABLE:
+        return fallback_order[0]
+    try:
+        genai.configure(api_key=api_key)
+        available = {model.name.replace("models/", "") for model in genai.list_models()}
+        for candidate in fallback_order:
+            if candidate in available:
+                return candidate
+    except Exception:
+        pass
+    return fallback_order[0]
+
+
 def get_llm_settings() -> Tuple[str, str, str]:
     """
     Zwraca (provider, api_key, model) dla aktualnie wybranego dostawcy LLM.
@@ -585,15 +668,15 @@ def get_llm_settings() -> Tuple[str, str, str]:
     if provider == "google":
         if not config.get("google_enabled", True):
             # Google wyłączony, zwróć pusty klucz
-            return provider, "", config.get("google_model", "gemini-1.5-pro-latest")
+            return provider, "", _resolve_google_model("", config.get("google_model", "auto"))
         api_key = config.get_google_api_key()
-        model = config.get("google_model", "gemini-1.5-pro-latest")
+        model = _resolve_google_model(api_key, config.get("google_model", "auto"))
     else:
         if not config.get("openai_enabled", True):
             # OpenAI wyłączony, zwróć pusty klucz
-            return provider, "", config.get("openai_model", "gpt-4o-mini")
+            return provider, "", _resolve_openai_model("", config.get("openai_model", "auto"))
         api_key = config.get_api_key()
-        model = config.get("openai_model", "gpt-4o-mini")
+        model = _resolve_openai_model(api_key, config.get("openai_model", "auto"))
     return provider, api_key, model
 
 def get_llm_client(provider: str, api_key: str, model: str):
@@ -607,7 +690,7 @@ def get_llm_client(provider: str, api_key: str, model: str):
     return OpenAI(api_key=api_key)
 
 
-def test_openai_connection(api_key: str, model: str = "gpt-4o-mini") -> Tuple[bool, str]:
+def test_openai_connection(api_key: str, model: str = "auto") -> Tuple[bool, str]:
     """
     Testuje połączenie z OpenAI API.
     Zwraca (success, message).
@@ -617,6 +700,7 @@ def test_openai_connection(api_key: str, model: str = "gpt-4o-mini") -> Tuple[bo
     try:
         from openai import OpenAI
         client = OpenAI(api_key=api_key)
+        model = _resolve_openai_model(api_key, model)
         # Prosty test - lista modeli lub krótki request
         response = client.chat.completions.create(
             model=model,
@@ -639,7 +723,7 @@ def test_openai_connection(api_key: str, model: str = "gpt-4o-mini") -> Tuple[bo
             return False, f"Błąd: {error_msg[:50]}"
 
 
-def test_google_connection(api_key: str, model: str = "gemini-1.5-pro-latest") -> Tuple[bool, str]:
+def test_google_connection(api_key: str, model: str = "auto") -> Tuple[bool, str]:
     """
     Testuje połączenie z Google AI Studio (Gemini) API.
     Zwraca (success, message).
@@ -650,6 +734,7 @@ def test_google_connection(api_key: str, model: str = "gemini-1.5-pro-latest") -
         return False, "Brak biblioteki google-generativeai"
     try:
         genai.configure(api_key=api_key)
+        model = _resolve_google_model(api_key, model)
         llm = genai.GenerativeModel(model)
         response = llm.generate_content(
             "Test connection. Reply with: OK",
@@ -1061,13 +1146,22 @@ with st.sidebar:
             help="Twój klucz OpenAI API",
             key="openai_api_key_input",
         )
-        openai_model = st.text_input(
+        openai_model = config.get("openai_model", "auto")
+        openai_models = ["auto"] + _get_openai_model_list(openai_api_key)
+        openai_selected = st.selectbox(
             "Model OpenAI",
-            value=config.get("openai_model", "gpt-4o-mini"),
-            key="openai_model_input"
+            options=openai_models or ["auto"],
+            index=openai_models.index(openai_model) if openai_model in openai_models else 0,
+            key="openai_model_select",
+            help="Modele są pobierane przy starcie aplikacji.",
         )
-        if openai_model != config.get("openai_model", "gpt-4o-mini"):
-            config.set("openai_model", openai_model)
+        if openai_selected != config.get("openai_model", "auto"):
+            config.set("openai_model", openai_selected)
+        openai_active_model = _resolve_openai_model(openai_api_key, openai_selected)
+        if openai_active_model == openai_selected or openai_selected == "auto":
+            st.caption(f"🟢 Aktywny model: {openai_active_model}")
+        else:
+            st.caption(f"🟡 Aktywny model: {openai_active_model}")
         if openai_api_key != saved_openai_key:
             if st.button("💾 Zapisz klucz OpenAI", key="save_openai"):
                 config.set_api_key(openai_api_key)
@@ -1126,13 +1220,22 @@ with st.sidebar:
             help="Twój klucz Google AI Studio (Gemini)",
             key="google_ai_key_input",
         )
-        google_model = st.text_input(
+        google_model = config.get("google_model", "auto")
+        google_models = ["auto"] + _get_google_model_list(google_api_key)
+        google_selected = st.selectbox(
             "Model Gemini",
-            value=config.get("google_model", "gemini-1.5-pro-latest"),
-            key="google_model_input"
+            options=google_models or ["auto"],
+            index=google_models.index(google_model) if google_model in google_models else 0,
+            key="google_model_select",
+            help="Modele są pobierane przy starcie aplikacji.",
         )
-        if google_model != config.get("google_model", "gemini-1.5-pro-latest"):
-            config.set("google_model", google_model)
+        if google_selected != config.get("google_model", "auto"):
+            config.set("google_model", google_selected)
+        google_active_model = _resolve_google_model(google_api_key, google_selected)
+        if google_active_model == google_selected or google_selected == "auto":
+            st.caption(f"🟢 Aktywny model: {google_active_model}")
+        else:
+            st.caption(f"🟡 Aktywny model: {google_active_model}")
         if google_api_key != saved_google_key:
             if st.button("💾 Zapisz klucz Google", key="save_google"):
                 config.set_google_api_key(google_api_key)
@@ -1488,7 +1591,11 @@ with tab_evaluate:
         # Initialize LLM client and evaluator only when needed
         api_key_local = job.get("api_key", "") or ""
         provider_local = job.get("provider", "openai")
-        model_local = job.get("model", "gpt-4o-mini")
+        model_local = job.get("model", "auto")
+        if provider_local == "google":
+            model_local = _resolve_google_model(api_key_local, model_local)
+        else:
+            model_local = _resolve_openai_model(api_key_local, model_local)
         client = get_llm_client(provider_local, api_key_local, model_local)
     
         if not TOPIC_ANALYZER_AVAILABLE:
