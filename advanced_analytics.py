@@ -705,6 +705,10 @@ class TimingPredictor:
         # Znajdź najlepszy dzień
         best_day = max(day_stats.items(), key=lambda x: x[1]["avg_views"])
         worst_day = min(day_stats.items(), key=lambda x: x[1]["avg_views"])
+        worst_avg = worst_day[1]["avg_views"]
+        improvement_potential = None
+        if worst_avg > 0:
+            improvement_potential = round((best_day[1]["avg_views"] / worst_avg - 1) * 100, 1)
         
         return {
             "by_day": day_stats,
@@ -712,7 +716,7 @@ class TimingPredictor:
             "best_day_avg": best_day[1]["avg_views"],
             "worst_day": worst_day[0],
             "worst_day_avg": worst_day[1]["avg_views"],
-            "improvement_potential": round((best_day[1]["avg_views"] / worst_day[1]["avg_views"] - 1) * 100, 1)
+            "improvement_potential": improvement_potential
         }
     
     def _analyze_topic_gaps(self, df: pd.DataFrame) -> Dict:
