@@ -34,11 +34,13 @@ if %errorlevel% neq 0 (
 
 echo.
 echo [OK] Uruchamiam aplikacje...
-echo [INFO] Otworz przegladarke na: http://localhost:8501
+echo [INFO] Otwieram przegladarke: http://localhost:8501
 echo [INFO] Aby zamknac: Ctrl+C
 echo.
 
-REM Run Streamlit
-python -m streamlit run app.py --server.headless true
+REM Run Streamlit in the background and open browser
+start "" /B python -m streamlit run app.py --server.headless true
+timeout /t 2 >nul
+start "" http://localhost:8501
 
 pause
