@@ -62,15 +62,26 @@ def render_tools_tab(
             df_w = df_w.sort_values(by="views", ascending=False)
             opts = list(df_w.index)
 
+            def _safe_int(value, default: int = 0) -> int:
+                if value is None or (isinstance(value, float) and pd.isna(value)):
+                    return default
+                try:
+                    if isinstance(value, str) and not value.strip():
+                        return default
+                    return int(value)
+                except (TypeError, ValueError):
+                    return default
+
             def _fmt(idx):
                 row = df_w.loc[idx]
-                return f"{str(row.get('title',''))[:80]} | {int(row.get('views',0) or 0):,} views"
+                views = _safe_int(row.get("views", 0))
+                return f"{str(row.get('title',''))[:80]} | {views:,} views"
 
             pick = st.selectbox("Film", options=opts, format_func=_fmt, key="wtopa_pick")
             if st.button("Załaduj dane filmu", key="wtopa_load_btn"):
                 row = df_w.loc[pick]
                 st.session_state["wtopa_title"] = str(row.get("title", ""))
-                st.session_state["wtopa_views"] = int(row.get("views", 0) or 0)
+                st.session_state["wtopa_views"] = _safe_int(row.get("views", 0))
 
                 ret = None
                 for col in [
