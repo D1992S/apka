@@ -650,13 +650,42 @@ class CompetitorManager:
         ensure_config_dir()
         self.competitors = self._load()
 
+    def _normalize_video(self, raw: Any) -> Optional[Dict[str, Any]]:
+        if isinstance(raw, str):
+            raw = {"video_id": raw}
+        if not isinstance(raw, dict):
+            return None
+        vid = (raw.get("video_id") or "").strip()
+        if not vid:
+            return None
+        return {
+            "video_id": vid,
+            "title": raw.get("title", "") or "",
+            "url": raw.get("url", "") or f"https://www.youtube.com/watch?v={vid}",
+            "published_at": raw.get("published_at", "") or raw.get("publishedAt", "") or raw.get("publishedTime", ""),
+            "source": raw.get("source", "") or "",
+            "added": raw.get("added", "") or "",
+        }
+
+    def _normalize_competitor(self, raw: Dict[str, Any]) -> Dict[str, Any]:
+        videos = []
+        for item in raw.get("videos", []) or []:
+            normalized = self._normalize_video(item)
+            if normalized:
+                videos.append(normalized)
+        return {
+            "id": raw.get("id", ""),
+            "name": raw.get("name", ""),
+            "channel_id": raw.get("channel_id", ""),
+            "notes": raw.get("notes", ""),
+            "added": raw.get("added", ""),
+            "videos": videos,
+        }
+
     def _load(self) -> List[Dict[str, Any]]:
-        if COMPETITORS_FILE.exists():
-            try:
-                with open(COMPETITORS_FILE, "r", encoding="utf-8") as f:
-                    return json.load(f)
-            except (IOError, json.JSONDecodeError) as e:
-                print(f"⚠ Nie udało się wczytać listy konkurencji: {e}")
+        data = _safe_load_json(COMPETITORS_FILE, [], "competitors.json")
+        if isinstance(data, list):
+            return [self._normalize_competitor(item) for item in data if isinstance(item, dict)]
         return []
 
     def save(self):
@@ -674,7 +703,8 @@ class CompetitorManager:
             "name": name or channel_id,
             "channel_id": channel_id,
             "notes": niche_notes,
-            "added": datetime.now().isoformat()
+            "added": datetime.now().isoformat(),
+            "videos": [],
         })
         self.save()
         return cid
@@ -689,6 +719,85 @@ class CompetitorManager:
 
     def list_all(self) -> List[Dict[str, Any]]:
         return self.competitors
+
+    def list_videos(self, competitor_id: str) -> List[Dict[str, Any]]:
+        for comp in self.competitors:
+            if comp.get("id") == competitor_id:
+                return comp.get("videos", [])
+        return []
+
+    def add_video(
+        self,
+        competitor_id: str,
+        video_id: str,
+        title: str = "",
+        url: str = "",
+        published_at: str = "",
+        source: str = "manual",
+    ) -> bool:
+        video_id = (video_id or "").strip()
+        if not video_id:
+            return False
+        for comp in self.competitors:
+            if comp.get("id") != competitor_id:
+                continue
+            videos = comp.setdefault("videos", [])
+            for existing in videos:
+                if existing.get("video_id") == video_id:
+                    if title:
+                        existing["title"] = title
+                    if url:
+                        existing["url"] = url
+                    if published_at:
+                        existing["published_at"] = published_at
+                    if source:
+                        existing["source"] = source
+                    self.save()
+                    return True
+            videos.append({
+                "video_id": video_id,
+                "title": title or "",
+                "url": url or f"https://www.youtube.com/watch?v={video_id}",
+                "published_at": published_at or "",
+                "source": source,
+                "added": datetime.now().isoformat(),
+            })
+            self.save()
+            return True
+        return False
+
+    def remove_video(self, competitor_id: str, video_id: str) -> bool:
+        for comp in self.competitors:
+            if comp.get("id") != competitor_id:
+                continue
+            before = len(comp.get("videos", []))
+            comp["videos"] = [v for v in comp.get("videos", []) if v.get("video_id") != video_id]
+            if len(comp["videos"]) != before:
+                self.save()
+                return True
+            return False
+        return False
+
+    def upsert_videos_from_fetch(self, uploads: List[Dict[str, Any]]) -> int:
+        added = 0
+        for item in uploads:
+            competitor_id = item.get("competitor_id")
+            video_id = item.get("video_id")
+            if not competitor_id or not video_id:
+                continue
+            title = item.get("title", "")
+            url = item.get("url", "")
+            published_at = item.get("publishedAt") or item.get("publishedTime") or ""
+            if self.add_video(
+                competitor_id=competitor_id,
+                video_id=video_id,
+                title=title,
+                url=url,
+                published_at=published_at,
+                source=item.get("source", "fetch"),
+            ):
+                added += 1
+        return added
 
 class TrendAlerts:
     """Zarządza alertami trendów"""

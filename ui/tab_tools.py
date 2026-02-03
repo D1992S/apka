@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+import re
 from typing import Callable
 
 import pandas as pd
@@ -469,6 +470,100 @@ def render_tools_tab(
                         return item.get("publishedAt") or item.get("publishedTime") or ""
 
                     vids_sorted = sorted(vids, key=_ts, reverse=True)
+                    saved_count = comp_mgr.upsert_videos_from_fetch(vids_sorted)
+                    if saved_count:
+                        st.success(f"✅ Zapisano {saved_count} filmów do listy kanałów.")
                     st.dataframe(vids_sorted, use_container_width=True)
                 else:
                     st.info("Brak filmów do wyświetlenia (albo brak danych z API).")
+
+            st.divider()
+            st.markdown("### 🎞️ Zapisane filmy konkurencji")
+
+            def _extract_video_id(raw_value: str) -> str:
+                raw_value = (raw_value or "").strip()
+                if not raw_value:
+                    return ""
+                if "youtu" not in raw_value:
+                    return raw_value
+                patterns = [
+                    r"v=([a-zA-Z0-9_-]{6,})",
+                    r"youtu\.be/([a-zA-Z0-9_-]{6,})",
+                    r"shorts/([a-zA-Z0-9_-]{6,})",
+                ]
+                for pattern in patterns:
+                    match = re.search(pattern, raw_value)
+                    if match:
+                        return match.group(1)
+                return raw_value
+
+            if competitors:
+                comp_options = {c["id"]: f"{c.get('name','')} ({c.get('channel_id','')})" for c in competitors}
+                selected_competitor_id = st.selectbox(
+                    "Wybierz kanał",
+                    options=list(comp_options.keys()),
+                    format_func=lambda cid: comp_options.get(cid, cid),
+                    key="comp_videos_pick",
+                )
+
+                add_col1, add_col2, add_col3, add_col4 = st.columns([2, 2, 2, 1])
+                with add_col1:
+                    manual_video = st.text_input(
+                        "Video ID lub URL",
+                        placeholder="https://www.youtube.com/watch?v=...",
+                        key="comp_video_manual_id",
+                    )
+                with add_col2:
+                    manual_title = st.text_input(
+                        "Tytuł (opcjonalnie)",
+                        placeholder="Tytuł filmu",
+                        key="comp_video_manual_title",
+                    )
+                with add_col3:
+                    manual_date = st.text_input(
+                        "Data publikacji (opcjonalnie)",
+                        placeholder="2024-01-15",
+                        key="comp_video_manual_date",
+                    )
+                with add_col4:
+                    if st.button("Dodaj film", key="comp_video_manual_add"):
+                        video_id = _extract_video_id(manual_video)
+                        if not video_id:
+                            st.warning("Podaj poprawny Video ID lub URL.")
+                        else:
+                            ok = comp_mgr.add_video(
+                                competitor_id=selected_competitor_id,
+                                video_id=video_id,
+                                title=manual_title,
+                                published_at=manual_date,
+                                source="manual",
+                            )
+                            if ok:
+                                st.success("✅ Dodano film.")
+                                st.rerun()
+                            else:
+                                st.warning("Nie udało się dodać filmu.")
+
+                current_videos = comp_mgr.list_videos(selected_competitor_id)
+                if current_videos:
+                    def _video_ts(item):
+                        return item.get("published_at") or ""
+
+                    for video in sorted(current_videos, key=_video_ts, reverse=True):
+                        vcol1, vcol2, vcol3, vcol4 = st.columns([3, 2, 2, 1])
+                        with vcol1:
+                            st.markdown(f"**{video.get('title') or video.get('video_id')}**")
+                            if video.get("url"):
+                                st.caption(video.get("url"))
+                        with vcol2:
+                            st.caption(video.get("published_at", ""))
+                        with vcol3:
+                            st.caption(video.get("source", ""))
+                        with vcol4:
+                            if st.button("🗑️", key=f"comp_video_del_{selected_competitor_id}_{video.get('video_id')}"):
+                                comp_mgr.remove_video(selected_competitor_id, video.get("video_id", ""))
+                                st.rerun()
+                else:
+                    st.info("Brak zapisanych filmów dla wybranego kanału.")
+            else:
+                st.info("Dodaj kanał konkurencji, aby zarządzać jego filmami.")
