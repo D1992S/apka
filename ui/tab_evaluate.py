@@ -198,6 +198,215 @@ def render_evaluate_tab(
             "basis": "similar_hits" if similar_hits else "channel_distribution",
         }
 
+    def _format_value(value: object) -> str:
+        if value is None or value == "":
+            return "-"
+        if isinstance(value, float):
+            return f"{value:,.1f}".replace(",", " ")
+        if isinstance(value, int):
+            return f"{value:,}".replace(",", " ")
+        return str(value)
+
+    def _render_kv_table(rows: list[dict]) -> None:
+        if not rows:
+            st.caption("Brak danych do wyświetlenia.")
+            return
+        st.table(pd.DataFrame(rows))
+
+    def _render_competition_details(comp: dict) -> None:
+        if not comp:
+            st.caption("Brak danych o konkurencji.")
+            return
+
+        error = comp.get("error") or comp.get("message")
+        status = comp.get("status")
+        if error or (status and status != "OK"):
+            st.warning(f"Nie udało się pobrać konkurencji: {error or status}")
+
+        rows = []
+        for label, key in [
+            ("Nasycenie", "saturation"),
+            ("Opportunity score", "opportunity_score"),
+            ("Łącznie filmów", "total_videos"),
+            ("Filmy > 50k", "high_view_videos"),
+            ("Ostatnie 180 dni", "recent_videos"),
+        ]:
+            if key in comp:
+                rows.append({"Pole": label, "Wartość": _format_value(comp.get(key))})
+        _render_kv_table(rows)
+
+        if comp.get("recommendation"):
+            st.info(comp["recommendation"])
+
+        top_videos = comp.get("top_videos") or []
+        if top_videos:
+            st.markdown("**Top filmy (przykłady)**")
+            st.dataframe(
+                [
+                    {
+                        "Tytuł": v.get("title", ""),
+                        "Wyświetlenia": _format_value(v.get("views")),
+                        "Kanał": v.get("channel", ""),
+                        "Publikacja": v.get("published", ""),
+                    }
+                    for v in top_videos[:5]
+                ],
+                use_container_width=True,
+            )
+
+    def _render_viral_details(viral: dict) -> None:
+        if not viral:
+            st.caption("Brak danych o viral score.")
+            return
+
+        score = viral.get("viral_score")
+        verdict = viral.get("verdict")
+        recommendation = viral.get("recommendation")
+
+        if score is not None:
+            st.metric("Viral Score", f"{_format_value(score)}/100")
+        if verdict:
+            st.markdown(f"**Werdykt:** {verdict}")
+        if recommendation:
+            st.markdown(f"**Rekomendacja:** {recommendation}")
+
+        factors = viral.get("factors") or []
+        if factors:
+            st.markdown("**Czynniki:**")
+            for factor in factors:
+                found = ", ".join(factor.get("found", []) or [])
+                bonus = factor.get("bonus", "")
+                label = factor.get("factor", "")
+                suffix = f" (słowa: {found})" if found else ""
+                st.markdown(f"- {label} {bonus}{suffix}")
+        else:
+            st.caption("Brak dodatkowych czynników.")
+
+    def _render_trends_details(trends: dict) -> None:
+        if not trends:
+            st.caption("Brak danych z Google Trends.")
+            return
+
+        status = trends.get("status")
+        message = trends.get("message")
+        if status and status != "OK":
+            st.warning(f"Google Trends: {message or status}")
+
+        overall = trends.get("overall") or {}
+        rows = []
+        for label, key in [
+            ("Status", "status"),
+            ("Ocena", "score"),
+            ("Bonus trendu", "trend_bonus"),
+            ("Rekomendacja", "recommendation"),
+        ]:
+            value = overall.get(key) if key != "status" else status
+            if value is not None:
+                rows.append({"Pole": label, "Wartość": _format_value(value)})
+        _render_kv_table(rows)
+
+        if overall.get("message"):
+            st.info(overall["message"])
+
+        keywords = trends.get("keywords") or {}
+        if isinstance(keywords, dict) and keywords:
+            st.markdown("**Słowa kluczowe**")
+            st.dataframe(
+                [
+                    {
+                        "Fraza": kw,
+                        "Trend": data.get("trend", ""),
+                        "Score": _format_value(data.get("score")),
+                        "Zmiana m/m": _format_value(data.get("change_vs_last_month")),
+                    }
+                    for kw, data in keywords.items()
+                    if isinstance(data, dict)
+                ],
+                use_container_width=True,
+            )
+
+    def _render_external_details(external: dict) -> None:
+        if not external:
+            st.caption("Brak danych zewnętrznych.")
+            return
+
+        if external.get("error"):
+            st.warning(f"Źródła zewnętrzne: {external['error']}")
+            return
+
+        wiki_stats = external.get("wikipedia_stats") or {}
+        if wiki_stats:
+            st.markdown("**Wikipedia**")
+            rows = []
+            for label, key in [
+                ("Artykuł istnieje", "article_exists"),
+                ("Suma wyświetleń (30d)", "total_pageviews_30d"),
+                ("Średnio dziennie", "avg_daily_views"),
+                ("Trend", "trend"),
+                ("Score", "wikipedia_score"),
+            ]:
+                if key in wiki_stats:
+                    rows.append({"Pole": label, "Wartość": _format_value(wiki_stats.get(key))})
+            _render_kv_table(rows)
+
+        wiki_list = external.get("wikipedia") or []
+        if wiki_list:
+            st.markdown("**Sugestie artykułów**")
+            st.dataframe(
+                [
+                    {
+                        "Tytuł": item.get("title", ""),
+                        "Opis": item.get("description", ""),
+                        "URL": item.get("url", ""),
+                    }
+                    for item in wiki_list
+                ],
+                use_container_width=True,
+            )
+
+        news = external.get("news") or {}
+        if news:
+            st.markdown("**News**")
+            rows = []
+            for label, key in [
+                ("Score newsów", "news_score"),
+                ("Ostatnie newsy", "has_recent_news"),
+                ("Szacowane artykuły", "estimated_articles"),
+            ]:
+                if key in news:
+                    rows.append({"Pole": label, "Wartość": _format_value(news.get(key))})
+            _render_kv_table(rows)
+            if news.get("recommendation"):
+                st.info(news["recommendation"])
+
+        seasonality = external.get("seasonality") or {}
+        if seasonality:
+            st.markdown("**Sezonowość**")
+            rows = []
+            for label, key in [
+                ("Sezonowość", "has_seasonality"),
+                ("Szczyt", "peak_month_name"),
+                ("Aktualna relewantność", "current_relevance"),
+                ("Powód", "reason"),
+            ]:
+                if key in seasonality and seasonality.get(key) is not None:
+                    rows.append({"Pole": label, "Wartość": _format_value(seasonality.get(key))})
+            _render_kv_table(rows)
+            if seasonality.get("recommendation"):
+                st.info(seasonality["recommendation"])
+
+        discovery = external.get("trend_discovery") or {}
+        if discovery:
+            st.markdown("**Trend discovery**")
+            rows = []
+            for label, key in [
+                ("Total score", "total_score"),
+                ("Werdykt", "verdict"),
+            ]:
+                if key in discovery:
+                    rows.append({"Pole": label, "Wartość": _format_value(discovery.get(key))})
+            _render_kv_table(rows)
+
     def _topic_stage_run(stage: int, job: dict) -> dict:
         """Uruchamia jeden etap oceny tematu, zapisuje wynik w job['result']."""
         topic = job.get("topic", "")
@@ -854,14 +1063,14 @@ def render_evaluate_tab(
             c1, c2 = st.columns(2)
             with c1:
                 st.markdown("**Konkurencja**")
-                st.json(res.get("competition", {}))
+                _render_competition_details(res.get("competition", {}))
                 st.markdown("**Viral Score**")
-                st.json(res.get("viral_score", {}))
+                _render_viral_details(res.get("viral_score", {}))
             with c2:
                 st.markdown("**Google Trends**")
-                st.json(res.get("trends", {}))
+                _render_trends_details(res.get("trends", {}))
                 st.markdown("**External**")
-                st.json(res.get("external_data", {}))
+                _render_external_details(res.get("external_data", {}))
 
             st.markdown("**Podobne hity na kanale**")
             if res.get("similar_hits"):

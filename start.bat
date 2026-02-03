@@ -38,7 +38,11 @@ echo [INFO] Otworz przegladarke na: http://localhost:8501
 echo [INFO] Aby zamknac: Ctrl+C
 echo.
 
-REM Run Streamlit
-python -m streamlit run app.py --server.headless true
+REM Run Streamlit in background, then open browser
+start "" /b python -m streamlit run app.py --server.headless true
+timeout /t 2 /nobreak >nul
+start "" http://localhost:8501
 
+echo.
+echo [INFO] Aplikacja dziala. Zamknij to okno, aby zakonczyc.
 pause
