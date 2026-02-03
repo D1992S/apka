@@ -198,16 +198,102 @@ def load_merged_data() -> Optional[pd.DataFrame]:
     """Ładuje połączone dane kanału z normalizacją kolumn"""
     from config_manager import normalize_dataframe_columns
 
+    def _drop_summary_rows(df: pd.DataFrame) -> pd.DataFrame:
+        summary_values = {"suma"}
+        for col in ("Treść", "Tytuł filmu", "title"):
+            if col in df.columns:
+                mask = df[col].astype(str).str.strip().str.lower().isin(summary_values)
+                df = df.loc[~mask]
+        return df
+
+    def _load_local_exports() -> Dict[str, pd.DataFrame]:
+        root_dir = Path(".")
+        exports: Dict[str, pd.DataFrame] = {}
+
+        table_file = root_dir / "Dane w tabeli.csv"
+        if table_file.exists():
+            df = pd.read_csv(table_file)
+            df = _drop_summary_rows(df)
+            exports["table"] = normalize_dataframe_columns(df)
+
+        razem_file = root_dir / "Razem.csv"
+        if razem_file.exists():
+            df = pd.read_csv(razem_file)
+            df = _drop_summary_rows(df)
+            exports["razem"] = normalize_dataframe_columns(df)
+
+        chart_file = root_dir / "Dane wykresu.csv"
+        if chart_file.exists():
+            df = pd.read_csv(chart_file)
+            df = _drop_summary_rows(df)
+            group_col = "Tytuł filmu" if "Tytuł filmu" in df.columns else None
+            if group_col:
+                agg_map = {}
+                if "Wyświetlenia zamierzone" in df.columns:
+                    agg_map["Wyświetlenia zamierzone"] = "sum"
+                if "Data i godzina publikacji filmu" in df.columns:
+                    agg_map["Data i godzina publikacji filmu"] = "min"
+                if "Czas trwania" in df.columns:
+                    agg_map["Czas trwania"] = "max"
+                if agg_map:
+                    df = df.groupby(group_col, as_index=False).agg(agg_map)
+            exports["chart"] = normalize_dataframe_columns(df)
+
+        return exports
+
+    def _merge_supplemental(base: Optional[pd.DataFrame], extra: pd.DataFrame) -> Optional[pd.DataFrame]:
+        if extra is None or extra.empty:
+            return base
+        if base is None or base.empty:
+            return extra.copy()
+
+        merge_key = None
+        for key in ("video_id", "title"):
+            if key in base.columns and key in extra.columns:
+                merge_key = key
+                break
+        if not merge_key:
+            return base
+
+        base_clean = base.drop_duplicates(subset=[merge_key], keep="last").set_index(merge_key)
+        extra_clean = extra.drop_duplicates(subset=[merge_key], keep="last").set_index(merge_key)
+        for col in extra_clean.columns:
+            if col not in base_clean.columns:
+                base_clean[col] = extra_clean[col]
+            else:
+                base_clean[col] = base_clean[col].combine_first(extra_clean[col])
+        return base_clean.reset_index()
+
     # Najpierw sprawdź synced data
     synced_file = CHANNEL_DATA_DIR / "synced_channel_data.csv"
+    base_df: Optional[pd.DataFrame] = None
     if synced_file.exists():
         df = pd.read_csv(synced_file)
-        return normalize_dataframe_columns(df)
+        base_df = normalize_dataframe_columns(df)
 
     if MERGED_DATA_FILE.exists():
         df = pd.read_csv(MERGED_DATA_FILE)
-        return normalize_dataframe_columns(df)
-    return None
+        base_df = normalize_dataframe_columns(df)
+
+    exports = _load_local_exports()
+    for key in ("table", "chart"):
+        if key in exports:
+            base_df = _merge_supplemental(base_df, exports[key])
+
+    if "razem" in exports:
+        try:
+            CHANNEL_DATA_DIR.mkdir(exist_ok=True)
+            exports["razem"].to_csv(CHANNEL_DATA_DIR / "razem_channel_data.csv", index=False)
+        except Exception:
+            pass
+
+    if base_df is not None:
+        try:
+            CHANNEL_DATA_DIR.mkdir(exist_ok=True)
+            base_df.to_csv(MERGED_DATA_FILE, index=False)
+        except Exception:
+            pass
+    return base_df
 
 def validate_channel_dataframe(df: pd.DataFrame) -> Dict[str, List[str]]:
     """Waliduje podstawowy format danych kanału."""
