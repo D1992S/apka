@@ -33,5 +33,5 @@ google-auth-httplib2>=0.1.1
 youtube-transcript-api>=0.6.2
 
 # === FIX: httpx version for youtube-search-python ===
-# If you get 'proxies' error, run:
-# pip install httpx==0.24.1
+# Pin httpx to avoid "post() got an unexpected keyword argument 'proxies'".
+httpx==0.24.1
