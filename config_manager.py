@@ -767,15 +767,37 @@ class TrendAlerts:
 
 # Mapowanie aliasów kolumn CSV do standardowych nazw
 COLUMN_ALIASES = {
-    'title': ['title', 'title_api', 'Title', 'TITLE', 'tytul', 'Tytuł'],
-    'views': ['views', 'viewCount', 'Views', 'VIEWS', 'wyswietlenia'],
-    'retention': ['retention', 'avgViewPercentage', 'avg_view_percentage', 'Retention', 'retencja'],
-    'published_at': ['published_at', 'publishedAt', 'date', 'published', 'data_publikacji'],
+    'title': ['title', 'title_api', 'Title', 'TITLE', 'tytul', 'Tytuł', 'Tytuł filmu'],
+    'views': [
+        'views',
+        'viewCount',
+        'Views',
+        'VIEWS',
+        'wyswietlenia',
+        'Wyświetlenia',
+        'Wyświetlenia zamierzone',
+    ],
+    'retention': [
+        'retention',
+        'avgViewPercentage',
+        'avg_view_percentage',
+        'Retention',
+        'retencja',
+        'Średni procent obejrzenia (%)',
+    ],
+    'published_at': [
+        'published_at',
+        'publishedAt',
+        'date',
+        'published',
+        'data_publikacji',
+        'Data i godzina publikacji filmu',
+    ],
     'label': ['label', 'Label', 'LABEL', 'etykieta'],
-    'video_id': ['video_id', 'videoId', 'id', 'ID'],
+    'video_id': ['video_id', 'videoId', 'id', 'ID', 'Treść'],
     'likes': ['likes', 'likeCount', 'Likes'],
     'comments': ['comments', 'commentCount', 'Comments'],
-    'duration': ['duration', 'duration_seconds', 'dlugosc'],
+    'duration': ['duration', 'duration_seconds', 'dlugosc', 'Czas trwania'],
 }
 
 
