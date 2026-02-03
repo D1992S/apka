@@ -96,43 +96,34 @@ def render_data_tab(
     )
 
     if uploaded_files:
-        validations = []
         loaded_frames = []
+        skipped_required_files = []
+        unreadable_files = []
         for file in uploaded_files:
             try:
                 df = pd.read_csv(file)
             except EmptyDataError:
                 st.error(f"Plik {file.name} jest pusty lub bez nagłówków.")
-                validations.append(
-                    {
-                        "missing_required": ["title", "views"],
-                        "missing_recommended": [],
-                        "warnings": ["Plik CSV jest pusty lub nie zawiera nagłówków."],
-                    }
-                )
+                unreadable_files.append(file.name)
                 continue
             except Exception as exc:
                 st.error(f"Nie udało się wczytać pliku {file.name}: {exc}")
-                validations.append(
-                    {
-                        "missing_required": ["title", "views"],
-                        "missing_recommended": [],
-                        "warnings": [],
-                    }
-                )
+                unreadable_files.append(file.name)
                 continue
             loaded_frames.append(df)
             st.write(
                 f"**{file.name}**: {len(df)} wierszy, kolumny: {', '.join(df.columns[:5])}"
             )
             issues = validate_channel_dataframe(df)
-            validations.append(issues)
             if issues["missing_required"]:
                 st.error(
                     "Brak wymaganych kolumn: "
                     f"{', '.join(issues['missing_required'])}. "
                     "CSV musi zawierać `title` i `views`."
                 )
+                loaded_frames.pop()
+                skipped_required_files.append(file.name)
+                continue
             if issues["missing_recommended"]:
                 st.warning(
                     f"Brak rekomendowanych kolumn: {', '.join(issues['missing_recommended'])}"
@@ -141,19 +132,47 @@ def render_data_tab(
                 st.warning(warning)
 
         if st.button("💾 Zapisz i połącz dane"):
-            if any(v["missing_required"] for v in validations):
-                st.error(
-                    "Nie można zapisać danych: brakuje wymaganych kolumn (title, views)."
-                )
-                st.stop()
             if not loaded_frames:
                 st.error("Nie wczytano żadnych poprawnych plików CSV do zapisu.")
                 st.stop()
+            if skipped_required_files or unreadable_files:
+                skipped_details = []
+                if skipped_required_files:
+                    skipped_details.append(
+                        "pominięto pliki bez wymaganych kolumn: "
+                        + ", ".join(skipped_required_files)
+                    )
+                if unreadable_files:
+                    skipped_details.append(
+                        "pominięto pliki, których nie dało się odczytać: "
+                        + ", ".join(unreadable_files)
+                    )
+                st.warning("Zapisano tylko poprawne pliki CSV — " + "; ".join(skipped_details))
             channel_data_dir.mkdir(exist_ok=True)
 
-            merged = pd.concat(loaded_frames, ignore_index=True)
+            if merged_df is not None and "title" in merged_df.columns:
+                merged = merged_df.copy().drop_duplicates(subset=["title"], keep="last")
+            else:
+                merged = pd.DataFrame()
 
-            if "title" in merged.columns:
+            for df in loaded_frames:
+                if "title" not in df.columns:
+                    continue
+                incoming = df.drop_duplicates(subset=["title"], keep="last").set_index("title")
+                if merged.empty:
+                    merged = incoming.reset_index()
+                    continue
+                merged = merged.set_index("title")
+                existing_label = merged["label"] if "label" in merged.columns else None
+                merged.update(incoming)
+                if existing_label is not None:
+                    if "label" in merged.columns:
+                        merged["label"] = merged["label"].combine_first(existing_label)
+                    else:
+                        merged["label"] = existing_label
+                merged = merged.reset_index()
+
+            if not merged.empty and "title" in merged.columns:
                 merged = merged.drop_duplicates(subset=["title"], keep="last")
 
             merged.to_csv(merged_data_file, index=False)
