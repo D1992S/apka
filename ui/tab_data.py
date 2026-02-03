@@ -198,6 +198,27 @@ def render_data_tab(
         for warning in issues["warnings"]:
             st.warning(warning)
 
+        st.subheader("🛠️ Szybkie poprawki danych")
+        fix_col1, fix_col2 = st.columns(2)
+        with fix_col1:
+            if "label" not in merged_df.columns:
+                if st.button("➕ Dodaj kolumnę label", use_container_width=True):
+                    updated = merged_df.copy()
+                    updated["label"] = "BORDER"
+                    updated.to_csv(merged_data_file, index=False)
+                    st.success("✅ Dodano kolumnę label.")
+                    st.rerun()
+        with fix_col2:
+            numeric_cols = [col for col in ["views", "retention"] if col in merged_df.columns]
+            if numeric_cols:
+                if st.button("🧹 Wyczyść wartości views/retention", use_container_width=True):
+                    updated = merged_df.copy()
+                    for col in numeric_cols:
+                        updated[col] = pd.to_numeric(updated[col], errors="coerce")
+                    updated.to_csv(merged_data_file, index=False)
+                    st.success("✅ Wyczyściłem wartości liczbowe.")
+                    st.rerun()
+
         col1, col2, col3, col4 = st.columns(4)
 
         with col1:
@@ -216,6 +237,41 @@ def render_data_tab(
         display_cols = [c for c in ["title", "views", "retention", "label"] if c in merged_df.columns]
         if display_cols:
             st.dataframe(merged_df[display_cols].head(20), use_container_width=True)
+
+        if "title" in merged_df.columns:
+            st.subheader("🏷️ Etykiety PASS/BORDER/FAIL")
+            if "label" not in merged_df.columns:
+                st.info("Brak kolumny `label`. Możesz ją dodać ręcznie poniżej.")
+            editable_df = merged_df.copy()
+            if "label" not in editable_df.columns:
+                editable_df["label"] = "BORDER"
+            editable_df["label"] = (
+                editable_df["label"].fillna("BORDER").astype(str).str.upper()
+            )
+            label_edit_cols = [c for c in ["title", "views", "retention", "label"] if c in editable_df.columns]
+            edited_labels = st.data_editor(
+                editable_df[label_edit_cols],
+                column_config={
+                    "label": st.column_config.SelectboxColumn(
+                        "label",
+                        help="PASS/BORDER/FAIL",
+                        options=["PASS", "BORDER", "FAIL"],
+                        required=True,
+                    ),
+                },
+                disabled=[c for c in label_edit_cols if c != "label"],
+                use_container_width=True,
+            )
+            if st.button("💾 Zapisz etykiety", type="primary"):
+                updated = merged_df.drop(columns=["label"], errors="ignore").copy()
+                label_updates = edited_labels[["title", "label"]].copy()
+                label_updates["label"] = (
+                    label_updates["label"].fillna("BORDER").astype(str).str.upper()
+                )
+                updated = updated.merge(label_updates, on="title", how="left")
+                updated.to_csv(merged_data_file, index=False)
+                st.success("✅ Zapisano etykiety.")
+                st.rerun()
 
         if st.button("🗑️ Usuń wszystkie dane", type="secondary"):
             if merged_data_file.exists():
