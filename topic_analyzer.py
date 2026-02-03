@@ -10,6 +10,7 @@ Ocena TEMATU zamiast tytułu:
 """
 
 import re
+import unicodedata
 import json
 from datetime import datetime
 from typing import Dict, List, Tuple, Optional
@@ -777,9 +778,28 @@ class ViralScorePredictor:
 
 class SimilarVideosFinder:
     """Znajduje podobne filmy na kanale"""
+
+    STOPWORDS = {
+        'i', 'w', 'na', 'do', 'z', 'się', 'to', 'co', 'jak', 'czy', 'że', 'nie', 'o',
+        'za', 'dla', 'od', 'po', 'jest', 'było', 'była', 'byli', 'ten', 'ta', 'te',
+        'oraz', 'bez', 'pod', 'nad', 'przez', 'u', 'a', 'albo', 'lub',
+    }
     
     def __init__(self, channel_data: pd.DataFrame):
         self.channel_data = channel_data
+
+    @staticmethod
+    def _normalize_text(text: str) -> str:
+        """Ujednolica tekst: lower + usuń diakrytyki."""
+        text = text.lower()
+        normalized = unicodedata.normalize('NFKD', text)
+        return ''.join(ch for ch in normalized if not unicodedata.combining(ch))
+
+    def _extract_keywords(self, text: str) -> List[str]:
+        """Wydobywa słowa kluczowe z tekstu."""
+        normalized = self._normalize_text(text)
+        tokens = re.findall(r"\w+", normalized, flags=re.UNICODE)
+        return [t for t in tokens if len(t) > 3 and t not in self.STOPWORDS]
     
     def find(self, topic: str, title: str = None, top_n: int = 5) -> List[Dict]:
         """Znajduje podobne filmy z kanału"""
@@ -787,12 +807,12 @@ class SimilarVideosFinder:
             return []
         
         df = self.channel_data.copy()
-        search_text = f"{topic} {title or ''}".lower()
-        keywords = [w for w in search_text.split() if len(w) > 3]
+        search_text = f"{topic} {title or ''}"
+        keywords = self._extract_keywords(search_text)
         
         results = []
         for idx, row in df.iterrows():
-            row_title = str(row.get('title', '')).lower()
+            row_title = self._normalize_text(str(row.get('title', '')))
             
             # Count keyword matches
             match_count = sum(1 for kw in keywords if kw in row_title)
