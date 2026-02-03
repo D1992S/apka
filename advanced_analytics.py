@@ -493,7 +493,7 @@ class TrendsAnalyzer:
             
         except Exception as e:
             error_message = str(e)
-            if "429" in error_message or "Too Many Requests" in error_message:
+            if self._is_rate_limit_error(e, error_message):
                 return {
                     "status": "RATE_LIMIT",
                     "message": "Przekroczono limit zapytań Google Trends (429). Spróbuj ponownie później.",
@@ -504,6 +504,20 @@ class TrendsAnalyzer:
                 "message": error_message,
                 "keywords": keywords
             }
+
+    @staticmethod
+    def _is_rate_limit_error(exc: Exception, message: str) -> bool:
+        if hasattr(exc, "response"):
+            response = getattr(exc, "response")
+            status_code = getattr(response, "status_code", None)
+            if status_code == 429:
+                return True
+        lowered = message.lower()
+        return (
+            "429" in lowered
+            or "too many requests" in lowered
+            or "rate limit" in lowered
+        )
     
     def _analyze_trend_series(self, series: pd.Series, keyword: str) -> Dict:
         """Analizuje serię czasową trendu"""
