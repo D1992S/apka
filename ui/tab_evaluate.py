@@ -881,7 +881,11 @@ def render_evaluate_tab(
                 if recent_warning:
                     st.warning(f"⚠️ Ten temat może kanibalizować świeży film: {recent_warning}")
             else:
-                st.caption("Brak lub nie wczytano.")
+                st.caption(
+                    "Brak dopasowań. Dopasowanie jest leksykalne (po słowach kluczowych z tematu), "
+                    "więc jeśli hity są o gangach bez nazw własnych, dodaj w temacie słowa typu "
+                    "„kartel/mafia/gang/narkotyki”."
+                )
 
         col_s1, col_s2 = st.columns([1, 1])
         with col_s1:
