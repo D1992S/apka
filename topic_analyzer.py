@@ -637,6 +637,16 @@ class CompetitorAnalyzer:
             else:
                 result['recommendation'] = "🟠 Umiarkowany popyt lub wysoka świeża konkurencja."
             
+        except TypeError as e:
+            if "proxies" in str(e):
+                result['error'] = str(e)
+                result['recommendation'] = (
+                    "Błąd kompatybilności youtube-search-python z httpx. "
+                    "Zainstaluj: pip install httpx==0.24.1"
+                )
+            else:
+                raise
+        
         except Exception as e:
             result['error'] = str(e)
             result['recommendation'] = f"Błąd: {e}"

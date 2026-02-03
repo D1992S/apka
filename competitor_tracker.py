@@ -133,6 +133,18 @@ class CompetitorTracker:
                         "views": v.get("viewCount", {}).get("text", ""),
                         "url": v.get("link", "")
                     })
+            except TypeError as e:
+                if "proxies" in str(e):
+                    out.append({
+                        "error": (
+                            "Błąd kompatybilności youtube-search-python z httpx. "
+                            "Zainstaluj: pip install httpx==0.24.1"
+                        ),
+                        "competitor_id": c.get("id", ""),
+                        "query": query
+                    })
+                else:
+                    raise
             except Exception as e:
                 out.append({"error": str(e), "competitor_id": c.get("id",""), "query": query})
 
